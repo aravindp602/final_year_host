@@ -15,12 +15,19 @@ const { router: normalProcessRoutes, processBranch } = require("./routes/normalP
 const { router: domainProcessRoutes } = require("./routes/domainProcess");
 
 const app = express();
-const PORT = 5001; // Changed to 5001 to avoid conflicts
+const PORT = 5001; 
 
+// --- UPDATED CORS CONFIGURATION ---
 app.use(cors({
-  origin: "*", // Allow all origins for testing (or put your specific Vercel URL later)
-  methods: ["GET", "POST"]
+  origin: "*", // Allow all origins (Easiest for testing deployment)
+  methods: ["GET", "POST", "PUT", "DELETE", "OPTIONS"],
+  allowedHeaders: ["Content-Type", "Authorization", "X-Requested-With"],
+  credentials: true // Allow cookies if needed (though * origin limits this in some browsers, it helps for now)
 }));
+
+// Handle Preflight Requests Explicitly
+app.options('*', cors()); 
+
 app.use(express.json());
 
 // 3. Register Routes
@@ -28,7 +35,7 @@ app.use(resourceRoutes);
 app.use(normalProcessRoutes);
 app.use(domainProcessRoutes); 
 
-
+/* ---------------- Remaining Logic ---------------- */
 
 app.post("/find-domain", upload.single("dataset"), (req, res) => {
   if (!req.file) {
@@ -42,7 +49,6 @@ app.post("/find-domain", upload.single("dataset"), (req, res) => {
     res.json({ domain: "Medical" });
   }, 1000);
 });
-
 
 app.post("/run-config", upload.single("dataset"), async (req, res) => {
   try {
@@ -91,14 +97,13 @@ app.post("/run-config", upload.single("dataset"), async (req, res) => {
         } else {
             finalResults[item.branchName] = {
                 status: 'failed',
-                error: item.error, // Pass the specific error message
-                trainingResults: [], // Empty so it doesn't break UI
+                error: item.error,
+                trainingResults: [], 
                 outputs: {}
             };
         }
     });
 
-    // Send everything in 'outputs' so the frontend ResultsPanel can render it
     res.json({
         message: "Multi-Branch Pipeline Completed",
         outputs: finalResults, 
