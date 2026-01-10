@@ -1,0 +1,14 @@
+[
+  { "id": "m0", "label": "Best Cluster Algo", "name": "best_cluster_algo", "type": "model" },
+  { "id": "m1", "label": "K-Means", "name": "kmeans", "type": "model" },
+  { "id": "m2", "label": "MiniBatch K-Means", "name": "minibatch_kmeans", "type": "model" },
+  { "id": "m3", "label": "K-Medoids (PAM)", "name": "k_medoids", "type": "model" },
+  { "id": "m4", "label": "Gaussian Mixture (GMM)", "name": "gmm", "type": "model" },
+  { "id": "m5", "label": "DBSCAN", "name": "dbscan", "type": "model" },
+  { "id": "m6", "label": "OPTICS", "name": "optics", "type": "model" },
+  { "id": "m7", "label": "Agglomerative (Hierarchical)", "name": "hierarchical", "type": "model" },
+  { "id": "m8", "label": "MeanShift", "name": "meanshift", "type": "model" },
+  { "id": "m9", "label": "Birch", "name": "birch", "type": "model" },
+  { "id": "m10", "label": "Affinity Propagation", "name": "affinity_propagation", "type": "model" },
+  { "id": "m11", "label": "Spectral Clustering", "name": "spectral", "type": "model" }
+]

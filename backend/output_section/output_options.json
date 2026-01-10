@@ -1,0 +1,4 @@
+[
+  { "id": "o1", "label": "Metrics & Cluster Scatter Plot", "name": "scatter_plot", "type": "output"},
+  { "id": "o2", "label": "Download Labeled Dataset", "name": "labeled_dataset", "type": "output" }
+]
