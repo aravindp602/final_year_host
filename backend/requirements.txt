@@ -1,24 +1,20 @@
 fastapi
 uvicorn
+numpy<2.0.0
 pandas>=1.5.0
 scikit-learn>=1.2.0
+scikit-learn-extra
 joblib
 matplotlib
 seaborn
 openpyxl
 chardet
-# AutoML libraries
 tpot
 flaml
 h2o
 imbalanced-learn
-scikit-learn-extra
-# AI & LLM Support
-# Pinning huggingface-hub to ensure compatibility with transformers
 huggingface-hub>=0.20.0
 transformers>=4.36.0
 sentence-transformers
-# Environment variables
 python-dotenv
-# PyTorch (Standard version works for both, cloud usually CPU defaults or ignores GPU)
-torch
+torch --index-url https://download.pytorch.org/whl/cpu
