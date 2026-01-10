@@ -1,5 +1,6 @@
 import React, { useState, useEffect } from 'react';
 import axios from 'axios';
+import { API_BASE_URL } from "../../../config"; 
 
 const AIPlanOverlay = ({ 
     file, 
@@ -64,7 +65,8 @@ const AIPlanOverlay = ({
     formData.append("plan", JSON.stringify(plan));
 
     try {
-        const res = await axios.post("http://localhost:5001/execute-approved-plan", formData);
+         const res = await axios.post(`${API_BASE_URL}/execute-approved-plan`, formData);
+
         
         console.log("✅ [AIPlanOverlay] Execution Success:", res.data);
         
