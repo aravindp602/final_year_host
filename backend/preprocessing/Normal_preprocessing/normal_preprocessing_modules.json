@@ -1,0 +1,11 @@
+[
+  { "id": "np1", "label": "Remove Duplicates", "name": "remove_duplicates", "type": "preprocessing" },
+  { "id": "np2", "label": "Handle Missing Values", "name": "handle_missing_values", "type": "preprocessing" },
+  { "id": "np3", "label": "Outlier Removal (IQR)", "name": "outlier_removal_iqr", "type": "preprocessing" },
+  { "id": "np5", "label": "Polynomial Features", "name": "polynomial_features", "type": "preprocessing" },
+  { "id": "np6", "label": "Log Transform", "name": "log_transform", "type": "preprocessing" },
+  { "id": "np7", "label": "Encoding", "name": "encoding", "type": "preprocessing" },
+  { "id": "np8", "label": "Scaling", "name": "scaling", "type": "preprocessing" },
+  { "id": "np9", "label": "Normalization", "name": "normalization", "type": "preprocessing" },
+  { "id": "np10", "label": "PCA", "name": "pca", "type": "preprocessing" }
+]

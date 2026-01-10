@@ -1,0 +1,13 @@
+backend/node_modules/
+backend/uploads/
+electron-app/node_modules/
+electron-app/.env
+build/
+dist/
+.env
+backend/.env
+.DS_Store
+backend/model_selectionAndTraining/candidate_models
+backend/model_selectionAndTraining/models
+backend/model_selectionAndTraining/test_dataset.csv
+backend/model_selectionAndTraining/train_dataset.csv
