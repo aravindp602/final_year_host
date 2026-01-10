@@ -3,9 +3,6 @@ import pandas as pd
 import importlib.util
 import json
 import sys
-import model_selectionAndTraining.models as models
-sys.modules["models"] = models
-
 
 # ---------------------------------------------------------
 # 1. SETUP PATHS
@@ -14,8 +11,14 @@ current_dir = os.path.dirname(os.path.abspath(__file__))
 models_dir = os.path.join(current_dir, "models")
 model_names_file = os.path.join(current_dir, "model_names.json")
 
+# Ensure root path is injected for safety
+BASE_DIR = os.path.abspath(os.path.join(current_dir, ".."))
+if BASE_DIR not in sys.path:
+    sys.path.insert(0, BASE_DIR)
+
 CANDIDATE_MODELS = {}
 
+# Load list of models to test
 try:
     if os.path.exists(model_names_file):
         with open(model_names_file, 'r') as f:
@@ -29,18 +32,28 @@ except Exception as e:
     print(f"[ERROR] Failed to read config: {e}")
 
 # ---------------------------------------------------------
-# 2. HELPERS
+# 2. HELPER: DIRECT FILE LOADER
 # ---------------------------------------------------------
 def load_model_script(algo_name):
+    """
+    Loads a python script directly by file path.
+    Bypasses package import errors on cloud.
+    """
     try:
         script_path = os.path.join(models_dir, f"{algo_name}.py")
-        if not os.path.exists(script_path): return None
+        if not os.path.exists(script_path):
+            print(f"   [ERROR] Script not found: {script_path}")
+            return None
+
+        # Load file directly
         spec = importlib.util.spec_from_file_location(f"models.{algo_name}", script_path)
         module = importlib.util.module_from_spec(spec)
         sys.modules[f"models.{algo_name}"] = module
         spec.loader.exec_module(module)
         return module
-    except: return None
+    except Exception as e:
+        print(f"   [ERROR] Loader failed for {algo_name}: {e}")
+        return None
 
 def normalize_metrics(metrics):
     if not metrics: return {}
@@ -65,7 +78,11 @@ def train_candidate(name, script_name, X_train, y_train, X_test, y_test, train_p
         module = load_model_script(script_name)
         if not module: return None
 
+        # Define path for NEW model
         model_path = os.path.join(output_dir, f"candidate_{name}.pkl")
+        
+        # 🔥 FORCE FRESH TRAINING (DO NOT LOAD OLD PICKLES)
+        # We always call module.train(), never pickle.load()
         metrics = module.train(
             X_train, y_train, 
             X_test, y_test, 
@@ -73,6 +90,7 @@ def train_candidate(name, script_name, X_train, y_train, X_test, y_test, train_p
             target_col,
             model_path
         )
+        
         return {
             "model": name, 
             "label": name.replace("_", " ").title(),
@@ -125,14 +143,18 @@ def run(X_train, y_train, X_test, y_test, train_path, test_path, target_col, out
         })
     
     df_rank = pd.DataFrame(data)
+    
+    # Ranking Logic: High SIL/CHI is good, Low DB is good
     df_rank['r_sil'] = df_rank['sil'].rank(ascending=False) 
     df_rank['r_ch']  = df_rank['ch'].rank(ascending=False)  
     df_rank['r_db']  = df_rank['db'].rank(ascending=True)   
+
     df_rank['final_score'] = (df_rank['r_sil'] * 0.5) + (df_rank['r_ch'] * 0.25) + (df_rank['r_db'] * 0.25)
 
     best_row = df_rank.sort_values(by='final_score').iloc[0]
     winner = candidates[int(best_row['index'])]
-    winner['model'] = f"Best: {winner['label']}"
+    
+    winner['model'] = f"{winner['label']}"
     
     print(f"\n====== BEST MODEL FOUND: {winner['label']} (Score: {best_row['final_score']:.2f}) ======\n", flush=True)
     
