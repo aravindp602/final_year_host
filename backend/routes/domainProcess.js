@@ -199,7 +199,7 @@ router.post("/execute-approved-plan", upload.single("dataset"), async (req, res)
       });
   
       // ✅ FULL AUTO-ML CONFIG ('m0')
-      const defaultModelId = "m0"; 
+      const defaultModelId = "m1"; 
       const defaultOutputId = "o1"; 
       const mList = [defaultModelId];
       const oList = [defaultOutputId];
