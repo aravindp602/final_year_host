@@ -3,4 +3,4 @@ const isLocal = window.location.hostname === "localhost" || window.location.host
 
 export const API_BASE_URL = isLocal 
   ? "http://localhost:5001" 
-  : "https://your-backend-name.onrender.com"; // We will get this URL later
+  : "https://final-year-project-j0wc.onrender.com"; // We will get this URL later
