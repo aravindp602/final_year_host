@@ -3,6 +3,9 @@ import pandas as pd
 import importlib.util
 import json
 import sys
+import model_selectionAndTraining.models as models
+sys.modules["models"] = models
+
 
 # ---------------------------------------------------------
 # 1. SETUP PATHS
