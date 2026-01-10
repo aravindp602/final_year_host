@@ -1,7 +1,7 @@
 import React, { useState } from "react"; // Removed useEffect from import
 import axios from "axios";
 import ErrorPopup from '../../ErrorPopup'; 
-import { API_BASE_URL } from "../../config";
+import { API_BASE_URL } from "../../../config";
 
 const Preprocessor = ({ file, detectedDomain, setLoading, onPlanGenerated }) => {
   const [error, setError] = useState(null); 

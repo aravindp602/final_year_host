@@ -1,7 +1,7 @@
 import React, { useState, useEffect } from "react";
 import axios from "axios";
 import ErrorPopup from '../../ErrorPopup';
-import { API_BASE_URL } from "../../config";
+import { API_BASE_URL } from "../../../config";
 
 // 1. Accept setLoading prop (was local state before)
 const DomainDetector = ({ file, onDomainDetected, setLoading }) => {
