@@ -25,8 +25,7 @@ app.use(cors({
   credentials: true // Allow cookies if needed (though * origin limits this in some browsers, it helps for now)
 }));
 
-// Handle Preflight Requests Explicitly
-app.options('*', cors()); 
+
 
 app.use(express.json());
 
