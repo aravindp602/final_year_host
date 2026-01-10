@@ -7,7 +7,7 @@
     "start": "electron .",
     "react-start": "PORT=3001 react-scripts start",
     "dev": "concurrently \"npm run react-start\" \"npm start\"",
-    "react-build": "react-scripts build",
+    "build": "react-scripts build",
     "test": "react-scripts test",
     "electron-build": "electron-builder"
   },

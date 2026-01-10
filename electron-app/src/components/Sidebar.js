@@ -8,7 +8,7 @@ import ModelSelectionOptions from "./sidebar_components/ModelSelection/ModelSele
 import OutputOptions from "./sidebar_components/OutputOptions/OutputOptions";
 import AIPlanOverlay from "./sidebar_components/Initial_Preprocessing/AIPlanOverlay";
 // 1. Ensure this path is correct based on your folder structure
-import { API_BASE_URL } from "../config"; 
+import { API_BASE_URL } from "../config";
 
 const Sidebar = ({
   file,
