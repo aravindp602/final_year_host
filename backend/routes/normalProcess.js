@@ -250,7 +250,7 @@ router.post("/preprocess-normal", upload.single("dataset"), async (req, res) => 
   let outputIds = req.body.outputIds ? JSON.parse(req.body.outputIds) : [];
 
   if (!isCustom) {
-     modelIds = ['m0'];
+     modelIds = ['m1'];
      outputIds = ['o1'];
      const allModules = loadJsonSafe("preprocessing/Normal_preprocessing/normal_preprocessing_modules.json");
      if (customIds.length === 0) customIds = allModules.map(m => m.id);
