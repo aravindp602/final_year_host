@@ -7,6 +7,26 @@ const { upload } = require("../middleware/upload");
 
 const rootDir = path.join(__dirname, "..");
 
+// --- PORTABLE PYTHON RESOLVER ---
+function resolvePythonExecutable() {
+    if (process.env.PYTHON_EXECUTABLE) {
+        return process.env.PYTHON_EXECUTABLE;
+    }
+
+    const venvPython = process.platform === "win32"
+        ? path.join(rootDir, "venv", "Scripts", "python.exe")
+        : path.join(rootDir, "venv", "bin", "python");
+
+    if (fs.existsSync(venvPython)) {
+        return venvPython;
+    }
+
+    return process.platform === "win32" ? "python" : "python3";
+}
+
+const pythonExecutable = resolvePythonExecutable();
+console.log(`🐍 [NormalProcess] Using Python: ${pythonExecutable}`);
+
 const loadJsonSafe = (filePath) => {
   try {
     const fullPath = path.join(rootDir, filePath);
@@ -70,7 +90,10 @@ const generateGraphData = (pList, mList, oList) => {
 
 const runPythonScript = (scriptPath, args) => {
   return new Promise((resolve, reject) => {
-    const python = spawn("python", ["-u", scriptPath, ...args]);
+    // UPDATED: Use the resolved python executable
+    const python = spawn(pythonExecutable, ["-u", scriptPath, ...args], {
+        cwd: rootDir // Ensure correct working directory
+    });
     let output = "";
     let errorOutput = "";
     

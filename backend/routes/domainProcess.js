@@ -41,7 +41,11 @@ const loadJsonSafe = (filePath) => {
 // --- Helper: Run Python Script ---
 const runPythonScript = (scriptPath, args) => {
   return new Promise((resolve, reject) => {
-    const python = spawn(pythonExecutable, ["-u", scriptPath, ...args]);
+    // ✅ FIX: Pass 'cwd' inside the options object (3rd argument)
+    const python = spawn(pythonExecutable, ["-u", scriptPath, ...args], {
+        cwd: rootDir 
+    });
+
     let output = "";
     let errorOutput = "";
     let isPrintingJson = false;
@@ -93,10 +97,12 @@ router.post("/generate-medical-plan", upload.single("dataset"), (req, res) => {
     console.log("🤖 [Medical Plan] Starting Gemma plan generation for:", req.file.filename);
     const filePath = path.join(uploadDir, req.file.filename);
   
+    // Run LLM Script
     const pythonProcess = spawn(pythonExecutable, [
       "preprocessing/Domain_based_preprocessing/medical_plan_generator.py",
       filePath,
     ], {
+      cwd: rootDir, // ✅ Run from backend root
       env: { ...process.env, HF_TOKEN: process.env.HF_TOKEN }
     });
   
@@ -192,7 +198,7 @@ router.post("/execute-approved-plan", upload.single("dataset"), async (req, res)
           }
       });
   
-      // FULL AUTO-ML CONFIG ('m0')
+      // ✅ FULL AUTO-ML CONFIG ('m0')
       const defaultModelId = "m0"; 
       const defaultOutputId = "o1"; 
       const mList = [defaultModelId];
