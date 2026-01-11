@@ -1,6 +1,10 @@
 import { useCallback } from 'react';
 import axios from 'axios';
 import { extractChains } from '../branchExtractor';
+// 1. ADD THIS IMPORT (Adjust path if needed based on your folder structure)
+// This path assumes hooks folder is at: src/components/flowCanvas/hooks/
+// Config is at: src/config.js
+import { API_BASE_URL } from "../../../../config"; 
 
 export const usePipelineRunner = ({ localFile, nodes, edges, setResults, setError, setLoading, onValidate }) => {
   
@@ -32,7 +36,8 @@ export const usePipelineRunner = ({ localFile, nodes, edges, setResults, setErro
     try {
       setLoading(true); 
       
-      const res = await axios.post("http://localhost:5000/run-config", formData);
+      // 2. UPDATED: Use dynamic URL
+      const res = await axios.post(`${API_BASE_URL}/run-config`, formData);
 
       if (res.status === 200) {
         const { outputs, errors } = res.data;
@@ -59,7 +64,9 @@ export const usePipelineRunner = ({ localFile, nodes, edges, setResults, setErro
       }
     } catch (err) {
       console.error("❌ [RunConfig] Error sending config:", err);
-      setError("Critical Error: Unable to process configuration.");
+      // Improve error message display
+      const msg = err.response?.data?.message || err.message || "Critical Error: Unable to process configuration.";
+      setError(msg);
     } finally {
       setLoading(false); 
     }
