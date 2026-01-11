@@ -4,7 +4,7 @@ import { extractChains } from '../branchExtractor';
 // 1. ADD THIS IMPORT (Adjust path if needed based on your folder structure)
 // This path assumes hooks folder is at: src/components/flowCanvas/hooks/
 // Config is at: src/config.js
-import { API_BASE_URL } from "../../../../config"; 
+import { API_BASE_URL } from "../../../config";
 
 export const usePipelineRunner = ({ localFile, nodes, edges, setResults, setError, setLoading, onValidate }) => {
   
