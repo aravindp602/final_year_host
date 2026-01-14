@@ -4,6 +4,7 @@ import json
 import pandas as pd
 import numpy as np
 from sklearn.preprocessing import StandardScaler, LabelEncoder
+from sklearn.impute import SimpleImputer # ✅ Added Imputer
 import shutil
 
 # --- CONFIGURATION ---
@@ -34,7 +35,6 @@ def save_log(df, step_num, step_name):
     filename = f"{step_num}_{clean_name}.csv"
     path = os.path.join(LOG_DIR, filename)
     df.to_csv(path, index=False)
-    # The frontend looks for this specific log format
     print(f"   --> Saved log: {filename}")
 
 # --- LOAD DATA ---
@@ -47,10 +47,10 @@ except Exception as e:
     sys.exit(1)
 
 # --- EXECUTION ENGINE ---
-# We execute in a specific order: DROP -> ENCODE -> SCALE
+# We execute in a specific order: DROP -> IMPUTE -> ENCODE -> SCALE
 step_counter = 1
 
-# 1. DROP (Do this first to reduce memory and noise)
+# 1. DROP
 cols_to_drop = [col for col, details in plan.items() if details['action'] == 'drop']
 if cols_to_drop:
     print(f"Running Drop Columns ({len(cols_to_drop)} columns)...")
@@ -60,8 +60,35 @@ if cols_to_drop:
         save_log(df, step_counter, "dropped_identifiers")
         step_counter += 1
 
-# 2. ENCODING (One-Hot)
-# We handle One-Hot separately because it expands columns
+# 2. IMPUTE (CRITICAL ADDITION)
+cols_to_impute = [col for col, details in plan.items() if details['action'] == 'impute']
+if cols_to_impute:
+    print(f"Running Imputation ({len(cols_to_impute)} columns)...")
+    mean_cols = []
+    mode_cols = []
+    
+    for col in cols_to_impute:
+        if col in df.columns:
+            strategy = plan[col].get('params', 'mean')
+            if strategy == 'mean': mean_cols.append(col)
+            else: mode_cols.append(col)
+    
+    # Mean Imputation (Numeric)
+    if mean_cols:
+        # Force numeric conversion just in case
+        for c in mean_cols: df[c] = pd.to_numeric(df[c], errors='coerce')
+        imp_mean = SimpleImputer(strategy='mean')
+        df[mean_cols] = imp_mean.fit_transform(df[mean_cols])
+        
+    # Mode Imputation (Categorical)
+    if mode_cols:
+        imp_mode = SimpleImputer(strategy='most_frequent')
+        df[mode_cols] = imp_mode.fit_transform(df[mode_cols])
+
+    save_log(df, step_counter, "imputed_values")
+    step_counter += 1
+
+# 3. ENCODING (One-Hot)
 cols_to_ohe = [col for col, details in plan.items() if details['action'] == 'one_hot_encode']
 if cols_to_ohe:
     print(f"Running One-Hot Encoding ({len(cols_to_ohe)} columns)...")
@@ -75,7 +102,7 @@ if cols_to_ohe:
         save_log(df, step_counter, "one_hot_encoded")
         step_counter += 1
 
-# 3. ENCODING (Label)
+# 4. ENCODING (Label)
 cols_to_le = [col for col, details in plan.items() if details['action'] == 'label_encode']
 if cols_to_le:
     print(f"Running Label Encoding ({len(cols_to_le)} columns)...")
@@ -90,12 +117,11 @@ if cols_to_le:
         save_log(df, step_counter, "label_encoded")
         step_counter += 1
 
-# 4. SCALING
+# 5. SCALING
 cols_to_scale = [col for col, details in plan.items() if details['action'] == 'scale']
 if cols_to_scale:
     print(f"Running Scaling ({len(cols_to_scale)} columns)...")
     scaler = StandardScaler()
-    # Only scale numeric columns that exist
     existing_scale = [c for c in cols_to_scale if c in df.columns and pd.api.types.is_numeric_dtype(df[c])]
     
     if existing_scale:

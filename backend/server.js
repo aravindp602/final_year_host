@@ -1,31 +1,49 @@
 const express = require("express");
 const cors = require("cors");
 const dotenv = require("dotenv");
+const path = require("path");
+const fs = require("fs"); // Added fs for python path check
+const { spawn } = require("child_process");
 
 // Load .env
 dotenv.config();
 
-const { upload } = require("./middleware/upload");
+const { upload, uploadDir } = require("./middleware/upload");
 const resourceRoutes = require("./routes/resources");
 
 // 1. Import Normal Processing Routes & Helper
 const { router: normalProcessRoutes, processBranch } = require("./routes/normalProcess");
 
-// 2. Import Domain Processing Routes (Includes generate-medical-plan)
+// 2. Import Domain Processing Routes
 const { router: domainProcessRoutes } = require("./routes/domainProcess");
 
 const app = express();
 const PORT = 5001; 
 
+// --- PORTABLE PYTHON RESOLVER (Added for server.js usage) ---
+function resolvePythonExecutable() {
+    if (process.env.PYTHON_EXECUTABLE) {
+        return process.env.PYTHON_EXECUTABLE;
+    }
+    const backendDir = __dirname;
+    const venvPython = process.platform === "win32"
+        ? path.join(backendDir, "venv", "Scripts", "python.exe")
+        : path.join(backendDir, "venv", "bin", "python");
+
+    if (fs.existsSync(venvPython)) {
+        return venvPython;
+    }
+    return process.platform === "win32" ? "python" : "python3";
+}
+const pythonExecutable = resolvePythonExecutable();
+
 // --- UPDATED CORS CONFIGURATION ---
 app.use(cors({
-  origin: "*", // Allow all origins (Easiest for testing deployment)
+  origin: "*", 
   methods: ["GET", "POST", "PUT", "DELETE", "OPTIONS"],
   allowedHeaders: ["Content-Type", "Authorization", "X-Requested-With"],
-  credentials: true // Allow cookies if needed (though * origin limits this in some browsers, it helps for now)
+  credentials: true 
 }));
-
-
 
 app.use(express.json());
 
@@ -34,20 +52,54 @@ app.use(resourceRoutes);
 app.use(normalProcessRoutes);
 app.use(domainProcessRoutes); 
 
-/* ---------------- Remaining Logic ---------------- */
+/* ---------------- Domain Identification (PYTHON) ---------------- */
 
 app.post("/find-domain", upload.single("dataset"), (req, res) => {
   if (!req.file) {
     return res.status(400).json({ message: "No file uploaded" });
   }
 
-  console.log("🚀 [Domain Detection] File received:", req.file.filename);
-  console.log("⚠️ [DEV MODE] Returning hardcoded domain: Medical");
+  const filePath = path.join(uploadDir, req.file.filename);
+  // Assuming script is at backend/domain_identification/domain_identification.py
+  // Adjust 'domain_identification' folder name if it's different in your structure
+  const scriptPath = path.join(__dirname, "domain_identification/domain_identification.py");
 
-  setTimeout(() => {
-    res.json({ domain: "Medical" });
-  }, 1000);
+  console.log("🚀 [Domain Detection] Running python script...");
+
+  // Use the resolved pythonExecutable
+  const pythonProcess = spawn(pythonExecutable, [scriptPath, filePath]);
+
+  let output = "";
+
+  pythonProcess.stdout.on("data", (data) => {
+    output += data.toString();
+  });
+
+  pythonProcess.stderr.on("data", (data) => {
+    console.error("🐍 Python Error:", data.toString());
+  });
+
+  pythonProcess.on("close", (code) => {
+    console.log("🐍 Raw Python Output:\n", output);
+
+    if (code !== 0) {
+      // Fallback to hardcoded Medical if script fails (DEV MODE safety net)
+      console.warn("⚠️ Python script failed. Returning default Medical domain.");
+      return res.json({ domain: "Medical" });
+    }
+
+    try {
+      const lastLine = output.trim().split("\n").pop();
+      const result = JSON.parse(lastLine);
+      res.json(result);
+    } catch (err) {
+      console.error("❌ Failed to parse domain JSON. Fallback to Medical.");
+      res.json({ domain: "Medical" });
+    }
+  });
 });
+
+/* ---------------- Run Configuration ---------------- */
 
 app.post("/run-config", upload.single("dataset"), async (req, res) => {
   try {
