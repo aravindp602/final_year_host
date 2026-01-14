@@ -5,7 +5,7 @@ import {
 
 const COLORS = ['#0088FE', '#00C49F', '#FFBB28', '#FF8042', '#8884d8', '#82ca9d', '#ffc658', '#d0ed57'];
 
-// --- 1. CONFIGURATION: MAP MULTIPLE KEYS TO ONE COLUMN HEADER ---
+// Configuration: Map multiple backend keys to single display headers
 const METRIC_MAPPING = {
   "Algorithm": ["algo", "algorithm", "model", "model_name"],
   "Clusters (K)": ["n_clusters", "best_k", "k", "num_clusters", "clusters"],
@@ -19,40 +19,12 @@ const METRIC_MAPPING = {
 export const ResultsPanel = ({ data, onClose }) => {
   const [viewingBranch, setViewingBranch] = useState(null);
 
-  // ---------------------------------------------------------
-  // 🔍 DEBUGGING SECTION START
-  // ---------------------------------------------------------
   useEffect(() => {
     if (!data) return;
-    
     console.group("🚀 [ResultsPanel Debugger]");
-    console.log("1. Full Data Object:", data);
-
-    if (data.main) {
-        const rawMetrics = data.main.trainingResults?.[0]?.metrics;
-        console.log("2. 'main' Branch Raw Metrics:", rawMetrics);
-        
-        if (rawMetrics) {
-            console.log("3. Keys available in 'main':", Object.keys(rawMetrics));
-            
-            // Check if our mapping works
-            const mappedAlgo = METRIC_MAPPING["Algorithm"].find(k => rawMetrics[k] !== undefined);
-            const mappedK = METRIC_MAPPING["Clusters (K)"].find(k => rawMetrics[k] !== undefined);
-            
-            console.log(`4. Mapping Check for 'main':`);
-            console.log(`   - Algorithm found? ${mappedAlgo ? "✅ (" + mappedAlgo + ")" : "❌ (Check Python output)"}`);
-            console.log(`   - Clusters (K) found? ${mappedK ? "✅ (" + mappedK + ")" : "❌ (Check Python output)"}`);
-        } else {
-            console.warn("⚠️ 'main' branch has no metrics object!");
-        }
-    } else {
-        console.log("ℹ️ No 'main' branch found in data.");
-    }
+    console.log("Full Data Object:", data);
     console.groupEnd();
   }, [data]);
-  // ---------------------------------------------------------
-  // 🔍 DEBUGGING SECTION END
-  // ---------------------------------------------------------
 
   const branches = useMemo(() => {
     return Object.keys(data || {}).sort((a, b) => {
@@ -62,7 +34,7 @@ export const ResultsPanel = ({ data, onClose }) => {
     });
   }, [data]);
 
-  // --- HELPER: Get Normalized Metrics for a Branch ---
+  // Helper: Get Normalized Metrics
   const getNormalizedMetrics = (branchKey) => {
     const branch = data[branchKey];
     if (!branch?.trainingResults || branch.trainingResults.length === 0) return {};
@@ -70,21 +42,20 @@ export const ResultsPanel = ({ data, onClose }) => {
     const rawMetrics = branch.trainingResults[0].metrics || {};
     const normalized = {};
 
-    // 1. Process known mappings
+    // 1. Known mappings
     Object.entries(METRIC_MAPPING).forEach(([displayName, potentialKeys]) => {
       for (const key of potentialKeys) {
         if (rawMetrics[key] !== undefined) {
           normalized[displayName] = rawMetrics[key];
-          break; // Found a value, stop looking for this metric
+          break; 
         }
       }
     });
 
-    // 2. Add any other keys that weren't in our mapping (custom metrics)
+    // 2. Custom metrics
     const allMappedKeys = Object.values(METRIC_MAPPING).flat();
     Object.keys(rawMetrics).forEach(key => {
       if (!allMappedKeys.includes(key)) {
-        // Capitalize first letter for nicer display
         const displayKey = key.charAt(0).toUpperCase() + key.slice(1).replace(/_/g, ' ');
         normalized[displayKey] = rawMetrics[key];
       }
@@ -93,7 +64,7 @@ export const ResultsPanel = ({ data, onClose }) => {
     return normalized;
   };
 
-  // --- HELPER: Get unique headers based on NORMALIZED keys ---
+  // Helper: Get unique headers
   const allMetricHeaders = useMemo(() => {
     const headers = new Set();
     branches.forEach(branch => {
@@ -101,7 +72,6 @@ export const ResultsPanel = ({ data, onClose }) => {
       Object.keys(metrics).forEach(k => headers.add(k));
     });
     
-    // Custom sort order: Put Algorithm and Clusters first, others alphabetically
     const priority = ["Algorithm", "Clusters (K)", "Silhouette Score", "Calinski-Harabasz", "Davies-Bouldin"];
     return Array.from(headers).sort((a, b) => {
       const idxA = priority.indexOf(a);
@@ -116,11 +86,10 @@ export const ResultsPanel = ({ data, onClose }) => {
 
   if (!data || branches.length === 0) return null;
 
-  // --- SUB-COMPONENT: The Scatter Plot View ---
+  // --- VIEW: SCATTER PLOT ---
   const renderScatterView = () => {
     const currentBranchData = data[viewingBranch];
     const scatterOutput = currentBranchData?.outputs?.o1;
-    // Use normalized metrics for the cards too!
     const metrics = getNormalizedMetrics(viewingBranch); 
 
     return (
@@ -150,18 +119,19 @@ export const ResultsPanel = ({ data, onClose }) => {
                 </div>
               ))
             ) : (
-               <div style={{color: '#999'}}>No metrics available for this branch.</div>
+               <div style={{color: '#999'}}>No metrics available.</div>
             )}
           </div>
 
-          {scatterOutput ? (
+          {/* ✅ CRITICAL FIX: Robust check for data array */}
+          {scatterOutput && scatterOutput.data && Array.isArray(scatterOutput.data) ? (
             <div style={{ height: '450px', background: '#fff', padding: '20px', borderRadius: '12px', border: '1px solid #eee' }}>
-              <div style={{ marginBottom: 10, fontWeight: 'bold', color: '#555' }}>Cluster Visualization</div>
+              <div style={{ marginBottom: 10, fontWeight: 'bold', color: '#555' }}>Cluster Visualization (PCA)</div>
               <ResponsiveContainer width="100%" height="90%">
                 <ScatterChart margin={{ top: 20, right: 20, bottom: 20, left: 20 }}>
                   <CartesianGrid strokeDasharray="3 3" />
-                  <XAxis type="number" dataKey="x" name="PC1" />
-                  <YAxis type="number" dataKey="y" name="PC2" />
+                  <XAxis type="number" dataKey="x" name="PC1" unit="" />
+                  <YAxis type="number" dataKey="y" name="PC2" unit="" />
                   <Tooltip cursor={{ strokeDasharray: '3 3' }} />
                   <Scatter name="Clusters" data={scatterOutput.data} fill="#8884d8">
                     {scatterOutput.data.map((entry, index) => (
@@ -173,7 +143,7 @@ export const ResultsPanel = ({ data, onClose }) => {
             </div>
           ) : (
             <div style={{ padding: 40, textAlign: 'center', background: '#fff', borderRadius: '8px', color: '#999', border: '1px dashed #ccc' }}>
-              No scatter plot data available (o1 output missing).
+              {scatterOutput?.error ? `Error: ${scatterOutput.error}` : "No visualization data available."}
             </div>
           )}
         </div>
@@ -181,7 +151,7 @@ export const ResultsPanel = ({ data, onClose }) => {
     );
   };
 
-  // --- SUB-COMPONENT: The Summary Table View ---
+  // --- VIEW: SUMMARY TABLE ---
   const renderTableView = () => {
     return (
       <div style={{ padding: '20px', overflowY: 'auto', height: '100%' }}>
@@ -205,15 +175,15 @@ export const ResultsPanel = ({ data, onClose }) => {
               </thead>
               <tbody>
                 {branches.map((branch) => {
-                  const metrics = getNormalizedMetrics(branch); // <--- USE NORMALIZED HERE
-                  const hasScatter = data[branch]?.outputs?.o1;
+                  const metrics = getNormalizedMetrics(branch);
+                  const hasScatter = data[branch]?.outputs?.o1?.data; // Only true if data exists
                   const isFailed = data[branch]?.status === 'failed' || data[branch]?.error;
 
                   return (
                     <tr key={branch} style={{ borderBottom: '1px solid #eee', background: isFailed ? '#fff5f5' : '#fff' }}>
                       <td style={{ padding: '15px', fontWeight: '500', color: branch === 'main' ? '#007bff' : '#333' }}>
                         {branch.replace('_', ' ')} {branch === 'main' && <span style={{fontSize: '10px', background:'#eef', padding:'2px 6px', borderRadius:'4px', marginLeft:'5px'}}>PRIMARY</span>}
-                        {isFailed && <span style={{marginLeft: 10}}>⚠️</span>}
+                        {isFailed && <span style={{marginLeft: 10, color:'red', fontSize:'12px'}}>⚠️ Failed</span>}
                       </td>
 
                       {allMetricHeaders.map(header => (
@@ -237,7 +207,9 @@ export const ResultsPanel = ({ data, onClose }) => {
                               View Scatter Plot
                             </button>
                          ) : (
-                           <span style={{ fontSize: '12px', color: '#ccc' }}>No Graph</span>
+                           <span style={{ fontSize: '12px', color: '#ccc' }}>
+                             {isFailed ? "Error" : "No Graph"}
+                           </span>
                          )}
                       </td>
                     </tr>

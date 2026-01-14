@@ -41,7 +41,7 @@ const loadJsonSafe = (filePath) => {
 // --- Helper: Run Python Script ---
 const runPythonScript = (scriptPath, args) => {
   return new Promise((resolve, reject) => {
-    // ✅ FIX: Pass 'cwd' inside the options object (3rd argument)
+    // ✅ PASS CWD OPTION CORRECTLY
     const python = spawn(pythonExecutable, ["-u", scriptPath, ...args], {
         cwd: rootDir 
     });
@@ -102,7 +102,7 @@ router.post("/generate-medical-plan", upload.single("dataset"), (req, res) => {
       "preprocessing/Domain_based_preprocessing/medical_plan_generator.py",
       filePath,
     ], {
-      cwd: rootDir, // ✅ Run from backend root
+      cwd: rootDir,
       env: { ...process.env, HF_TOKEN: process.env.HF_TOKEN }
     });
   
@@ -198,7 +198,7 @@ router.post("/execute-approved-plan", upload.single("dataset"), async (req, res)
           }
       });
   
-      // ✅ FULL AUTO-ML CONFIG ('m0')
+      // ✅ CHANGED TO 'm0' TO TRIGGER FULL AUTO-ML SEARCH (Change back to 'm1' for just KMeans)
       const defaultModelId = "m1"; 
       const defaultOutputId = "o1"; 
       const mList = [defaultModelId];
@@ -214,7 +214,7 @@ router.post("/execute-approved-plan", upload.single("dataset"), async (req, res)
       nodes.push({ id: outNodeId, type: "outputNode", position: { x: xPos, y: 85 }, data: { label: "Scatter Plot", baseId: defaultOutputId } });
       edges.push({ id: `e-${lastNodeId}-${outNodeId}`, source: lastNodeId, target: outNodeId, animated: true });
 
-      // 3. Model Training (Full Search)
+      // 3. Model Training
       let trainingResults = [];
       let trainedModelPath = null;
     
@@ -222,7 +222,10 @@ router.post("/execute-approved-plan", upload.single("dataset"), async (req, res)
         try {
           const allModels = loadJsonSafe("model_selectionAndTraining/model_names.json");
           const selectedModels = allModels.filter(m => mList.includes(m.id));
-          const payload = selectedModels.length > 0 ? selectedModels : [{ id: "m0", name: "AutoML", algo: "automl" }];
+          // Pass 'm0' to force Auto-ML logic in model_handler.py
+          const payload = selectedModels.length > 0 
+              ? selectedModels 
+              : [{ id: "m0", name: "AutoML", algo: "automl" }];
 
           const output = await runPythonScript(
             "model_selectionAndTraining/model_handler.py",

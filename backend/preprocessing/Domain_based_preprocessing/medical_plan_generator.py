@@ -5,271 +5,198 @@ import sys
 import traceback
 import os
 from typing import Dict, Any, Optional, Tuple
-
-# Use the official, modern Hugging Face client
 from huggingface_hub import InferenceClient
 
 class MedicalPlanGenerator:
     """
-    A specialized class that uses the Hugging Face InferenceClient to generate
-    a high-quality, domain-aware preprocessing plan using the specified Llama model.
+    Advanced Domain-Aware Planning Engine.
+    Uses Llama-3 to analyze semantic meaning of medical features 
+    to create a clinically valid preprocessing pipeline.
     """
-    ALLOWED_ACTIONS = {"drop", "scale", "one_hot_encode", "label_encode"}
+    
+    # We allow the AI to choose from these executable actions
+    ALLOWED_ACTIONS = {"drop", "impute", "scale", "one_hot_encode", "label_encode"}
 
     def __init__(
         self,
         hf_token: str,
-        model_id: str = "meta-llama/Llama-3.1-8B-Instruct:novita",
+        # ✅ UPGRADED MODEL (Llama-3.3 70B via Groq/HF)
+        model_id: str = "meta-llama/Llama-3.3-70B-Instruct", 
         target_col: str = "Level",
     ):
-        """Initializes the InferenceClient."""
         if not hf_token:
-            raise ValueError("Hugging Face token is required for the Inference API.")
-
-        # This client is the modern, correct way to interact with the HF API
+            raise ValueError("Hugging Face token is required.")
+        
         self.client = InferenceClient(token=hf_token)
         self.model_id = model_id
         self.target_col = target_col
-
-        print(
-            f"🚀 Initializing Medical Plan Generator with InferenceClient for model '{model_id}'...",
-            file=sys.stderr,
-            flush=True
-        )
-        print("✅ Generator ready.", file=sys.stderr, flush=True)
-
+        
+        # Force UTF-8 for reliable logging
+        sys.stdout.reconfigure(encoding='utf-8')
+        print(f"🚀 Initializing Clinical Reasoning Engine ({model_id})...", file=sys.stderr, flush=True)
 
     def _call_api(self, messages: list, max_new_tokens: int) -> str:
-        """Helper function to call the chat completions API."""
+        """Executes the LLM inference with high-stakes configuration."""
         try:
             response = self.client.chat.completions.create(
                 model=self.model_id,
                 messages=messages,
                 max_tokens=max_new_tokens,
-                temperature=0.1, # Low temperature for strict adherence to rules
+                temperature=0.1, # Near-zero temperature for deterministic output
                 stream=False,
             )
             return response.choices[0].message.content
         except Exception as e:
-            print(f"❌ API Request Failed. Full Error Traceback:", file=sys.stderr, flush=True)
-            if hasattr(e, 'response') and e.response is not None:
-                 print(f"Response Status: {e.response.status_code}", file=sys.stderr, flush=True)
-                 print(f"Response Body: {e.response.text}", file=sys.stderr, flush=True)
-            traceback.print_exc(file=sys.stderr)
+            print(f"❌ API Request Failed: {e}", file=sys.stderr)
+            # Fallback to smaller model if 70B fails or is busy
+            if "model_not_found" in str(e) or "404" in str(e):
+                print("⚠️ 70B Model unavailable. Falling back to 8B...", file=sys.stderr)
+                self.model_id = "meta-llama/Llama-3.1-8B-Instruct"
+                return self._call_api(messages, max_new_tokens)
             return ""
 
     @staticmethod
     def _extract_json(text: str) -> Optional[str]:
-        """Robustly extracts a full JSON object from model output using brace matching."""
-        if not text:
-            return None
-
-        # Try to find markdown code block first
+        """Robustly extracts JSON payload from mixed natural language output."""
+        if not text: return None
+        # Attempt to find markdown code blocks
         fenced = re.search(r"```json\s*(.*)```", text, re.DOTALL | re.IGNORECASE)
-        if fenced:
-            candidate = fenced.group(1).strip()
-        else:
-            # Fallback: look for the first opening brace
-            start = text.find("{")
-            if start == -1:
-                return None
-            candidate = text[start:]
-
-        # Balance braces to find the end of the JSON object
-        depth = 0
-        in_string = False
-        escape = False
-        start_idx = None
-
-        for i, ch in enumerate(candidate):
-            if escape:
-                escape = False
-                continue
-            if ch == "\\":
-                escape = True
-                continue
-            if ch == '"':
-                in_string = not in_string
-                continue
-            if in_string:
-                continue
-            if ch == "{":
-                if depth == 0:
-                    start_idx = i
-                depth += 1
-            elif ch == "}":
-                depth -= 1
-                if depth == 0 and start_idx is not None:
-                    return candidate[start_idx : i + 1].strip()
+        candidate = fenced.group(1).strip() if fenced else text
+        
+        # Fallback: Brute force search for JSON boundaries
+        start = candidate.find("{")
+        end = candidate.rfind("}")
+        
+        if start != -1 and end != -1:
+            return candidate[start : end + 1]
         return None
 
     def generate_plan(self, df: pd.DataFrame) -> Dict[str, Any]:
-        """Generates a domain-aware preprocessing plan using the API."""
-        print("\n--- Generating Preprocessing Plan (via API) ---", file=sys.stderr, flush=True)
+        print("\n--- Generating Clinical Preprocessing Strategy ---", file=sys.stderr, flush=True)
         
-        # Prepare column info
-        column_info = "\n".join([f"- `{col}` (dtype: {df[col].dtype}, unique values: {df[col].nunique()})" for col in df.columns])
+        # 1. GENERATE RICH CONTEXT
+        col_stats = []
+        for col in df.columns:
+            dtype = str(df[col].dtype)
+            missing_count = int(df[col].isnull().sum())
+            unique_count = int(df[col].nunique())
+            
+            # Extract non-null samples
+            samples = list(df[col].dropna().unique()[:5])
+            
+            stat_str = (
+                f"- Column: `{col}` | Type: {dtype} | Missing: {missing_count} | "
+                f"Unique Values: {unique_count} | Sample Data: {samples}"
+            )
+            col_stats.append(stat_str)
+            
+        column_info = "\n".join(col_stats)
 
-        # --- ADVANCED SYSTEM PROMPT ---
+        # 2. SYSTEM PERSONA
         system_prompt = (
-            "You are a Senior Clinical Data Scientist. "
-            "You are analyzing a medical dataset for a research study. "
-            "Your job is to clean the data based on **Biological and Clinical Significance**, not just statistics. "
-            "You classify variables as 'Administrative' (useless), 'Demographic' (risk factors), or 'Physiological' (signals)."
+            "You are a Principal Data Scientist specializing in Clinical Informatics. "
+            "You are tasked with preparing a raw Electronic Health Record (EHR) dataset for a predictive machine learning model. "
+            "Your priority is Clinical Validity: preserving biological signals while eliminating administrative noise and bias."
         )
 
-        # --- ADVANCED DOMAIN-SPECIFIC USER PROMPT ---
+        # 3. ADVANCED REASONING PROMPT
         user_prompt = f"""
-Analyze the provided medical dataset columns and generate a preprocessing plan to predict the target column: '{self.target_col}'.
+Analyze the medical dataset schema below. Perform a semantic analysis of each column to determine its role (Demographic, Vital Sign, ID, or Outcome).
+Based on this analysis, construct a preprocessing plan to predict the target: '{self.target_col}'.
 
-**1. Decision Rules (Follow Strictly):**
-- **Drop** if the column is an administrative identifier (e.g., Patient ID, Visit Code).
-- **Scale** if the column is a continuous biological measurement (e.g., Age, BMI, Blood Pressure, Lab Results).
-- **One-Hot Encode** if the column is a nominal category (e.g., Gender, Race, Smoking Status).
-- **Label Encode** if the column is ordinal (Low/Med/High) OR if it is the Target Column ('{self.target_col}').
-
-**2. Reasoning Requirements (Crucial):**
-- The `"reason"` field MUST explain the **medical nature** of the variable.
-- ❌ BAD REASON: "It is an integer with high cardinality."
-- ✅ GOOD REASON: "Administrative identifier with no biological predictive value."
-- ❌ BAD REASON: "It is a float."
-- ✅ GOOD REASON: "Continuous physiological vital sign that varies biologically."
-- ❌ BAD REASON: "It is a category."
-- ✅ GOOD REASON: "Nominal demographic risk factor."
-
-**Dataset Columns:**
+### DATASET PROFILING:
 {column_info}
 
-**Output Requirements:**
-1. Return ONLY a valid JSON object.
-2. Keys = Column Names.
-3. Values = Object with `"action"` and `"reason"`.
+### CLINICAL ML TOOLKIT:
+Select the most appropriate transformation for each feature from the following strategies:
+1. **Drop**: For administrative identifiers (e.g., Patient IDs, Serial Numbers) that carry no biological signal and cause leakage.
+2. **Impute**: **Mandatory if 'Missing' > 0**. 
+   - Use 'mean' for continuous physiological measures (to preserve population baseline).
+   - Use 'most_frequent' for categorical risk factors.
+3. **Scale**: For continuous biomarkers (e.g., BMI, Age, Lab Results) to normalize units for algorithms like K-Means.
+4. **One-Hot Encode**: For nominal categories (e.g., Gender, History) to prevent ordinal bias.
+5. **Label Encode**: For ordinal variables (Low/Med/High) or the specific Target Column.
 
-**Example Output:**
+### OUTPUT REQUIREMENTS:
+Return a raw JSON object mapping Column Names to their processing strategy.
+Format:
 {{
-  "Patient_ID": {{"action": "drop", "reason": "Administrative ID; contains no clinical signal."}},
-  "Age": {{"action": "scale", "reason": "Demographic variable; scaling aligns biological timeframe."}},
-  "Cholesterol": {{"action": "scale", "reason": "Physiological biomarker; requires normalization."}},
-  "Gender": {{"action": "one_hot_encode", "reason": "Nominal demographic factor."}}
+  "Column_Name": {{
+    "action": "strategy_name", 
+    "params": "optional_parameter", 
+    "reason": "Deep clinical justification..."
+  }}
 }}
 
-**Your JSON:**
+**Generate JSON:**
 """
         messages = [
             {"role": "system", "content": system_prompt},
             {"role": "user", "content": user_prompt},
         ]
 
+        # Call API
         response = self._call_api(messages, max_new_tokens=4096)
-        
-        if not response:
-            print("❌ Error: Received no response from API.", file=sys.stderr, flush=True)
-            return {}
-
         plan_str = self._extract_json(response)
-        if not plan_str:
-            print(f"❌ Error: No JSON object detected in API response.\nRaw response:\n{response}", file=sys.stderr, flush=True)
-            return {}
-
+        
         try:
-            plan = json.loads(plan_str)
-            print("--- Generated Plan (JSON) ---", file=sys.stderr, flush=True)
-            print(json.dumps(plan, indent=2), file=sys.stderr, flush=True)
-            return plan
-        except json.JSONDecodeError as e:
-            print(f"❌ Error decoding JSON: {e}", file=sys.stderr, flush=True)
-            print("---- Extracted JSON candidate ----", file=sys.stderr, flush=True)
-            print(plan_str, file=sys.stderr, flush=True)
+            return json.loads(plan_str)
+        except:
+            print(f"❌ JSON Decode Error. Raw response:\n{response}", file=sys.stderr)
             return {}
 
     def explain_plan_and_guide(self, plan: Dict[str, Any]) -> str:
-        """Generates a detailed clinical explanation using the API."""
-        print("\n--- Generating Explanation and Guidance (via API) ---", file=sys.stderr, flush=True)
-        if not plan:
-            return "No plan was generated to explain."
+        """Generates a professional Executive Summary suitable for stakeholders."""
+        print("\n--- Generating Executive Report ---", file=sys.stderr, flush=True)
         plan_str = json.dumps(plan, indent=2)
-
-        # --- ADVANCED EXPLANATION PROMPT ---
+        
         messages = [
-            {
-                "role": "system",
-                "content": "You are a Medical AI Research Mentor. You explain data strategies using clinical terminology (e.g., 'biomarkers', 'confounding variables', 'patient demographics').",
-            },
-            {
-                "role": "user",
-                "content": f"""
-I have generated a preprocessing plan for a medical dataset to predict '{self.target_col}'.
-Plan: {plan_str}
+            {"role": "system", "content": "You are a Lead AI Researcher presenting to a Medical Review Board."},
+            {"role": "user", "content": f"""
+Based on the following Preprocessing Plan, generate a structured Executive Summary.
 
-Please generate a comprehensive Markdown report.
+PLAN DATA:
+{plan_str}
 
-**Report Structure:**
-1. **Clinical Data Strategy:** Explain why we remove administrative IDs (to prevent leakage) and how we handle biological signals vs. demographics.
-2. **Detailed Rationale:** Group columns by action.
-   - For 'Scale', explain how this standardizes different biological units (e.g., years vs mg/dL).
-   - For 'Encode', explain how this handles qualitative patient history.
-3. **Implementation Guide:** A brief Python snippet showing `StandardScaler` and `LabelEncoder` implementation.
+**REPORT SECTIONS:**
+1. **Executive Summary:** High-level assessment of data quality and the chosen strategy.
+2. **Signal Preservation (Imputation):** Discuss how missing data was handled to minimize bias (Mean vs Mode reasoning).
+3. **Feature Engineering Strategy:** Justify why specific biomarkers were Scaled vs Encoded.
+4. **Data Hygiene:** Confirm removal of administrative columns (IDs) to ensure patient privacy and model generalizability.
 
-Keep the tone professional, medical, and accessible.
-""",
-            },
+Format using Markdown. Use authoritative, professional language.
+"""}
         ]
+        return self._call_api(messages, 2048)
 
-        explanation = self._call_api(messages, max_new_tokens=3072)
-        print("--- Generated Report ---", file=sys.stderr, flush=True)
-        return explanation
-
-    def run(self, df: pd.DataFrame) -> Tuple[Dict[str, Any], str]:
-        """Full pipeline: generate the plan, then generate the explanation."""
+    def run(self, df: pd.DataFrame):
         plan = self.generate_plan(df)
-        if not plan:
-            return {}, "Failed to generate a valid plan."
         explanation = self.explain_plan_and_guide(plan)
         return plan, explanation
 
-
 if __name__ == "__main__":
-    if len(sys.argv) < 2:
-        print("Error: No file path provided.", file=sys.stderr, flush=True)
+    if len(sys.argv) < 2: 
+        print("Usage: python medical_plan_generator.py <file_path>", file=sys.stderr)
         sys.exit(1)
-
-    # Command-line arguments
-    FILE_PATH = sys.argv[1]
-    TARGET_COLUMN = sys.argv[2] if len(sys.argv) > 2 else "Level"
-
-    print(f"--- Loading data from: {FILE_PATH} ---", file=sys.stderr, flush=True)
-    try:
-        raw_df = pd.read_csv(FILE_PATH)
-        print("✅ File loaded successfully.\n", file=sys.stderr, flush=True)
-    except Exception as e:
-        print(f"❌ Error loading CSV: {e}", file=sys.stderr, flush=True)
-        sys.exit(1)
-
-    print("--- Initializing Medical Plan Generator ---", file=sys.stderr, flush=True)
-    try:
-        HF_TOKEN = os.getenv("HF_TOKEN")
-        if not HF_TOKEN:
-            raise ValueError(
-                "Hugging Face token not found in environment variable HF_TOKEN."
-            )
-
-        plan_generator = MedicalPlanGenerator(
-            hf_token=HF_TOKEN, target_col=TARGET_COLUMN
-        )
-        generated_plan, generated_explanation = plan_generator.run(raw_df)
-
-        # Output to STDOUT (Visible in UI)
-        # Using flush=True to ensure it appears immediately
-        print("__PLAN_START__", flush=True)
-        print(json.dumps(generated_plan, indent=2), flush=True)
-        print("__PLAN_END__", flush=True)
         
-        print("__EXPLANATION_START__", flush=True)
-        print(generated_explanation, flush=True)
-        print("__EXPLANATION_END__", flush=True)
+    FILE_PATH = sys.argv[1]
+    
+    # Robust CSV Loading (Handling flexible engines)
+    try:
+        raw_df = pd.read_csv(FILE_PATH, sep=None, engine='python')
+    except:
+        raw_df = pd.read_csv(FILE_PATH)
+    
+    HF_TOKEN = os.getenv("HF_TOKEN")
+    
+    generator = MedicalPlanGenerator(HF_TOKEN)
+    plan, explanation = generator.run(raw_df)
 
-        print("\n--- Process Complete ---", file=sys.stderr, flush=True)
-    except Exception as e:
-        print(f"❌ An unexpected error occurred: {e}", file=sys.stderr, flush=True)
-        traceback.print_exc(file=sys.stderr)
-        sys.exit(1)
+    # Standard Output for Node.js IPC
+    print("__PLAN_START__", flush=True)
+    print(json.dumps(plan, indent=2), flush=True)
+    print("__PLAN_END__", flush=True)
+    
+    print("__EXPLANATION_START__", flush=True)
+    print(explanation, flush=True)
+    print("__EXPLANATION_END__", flush=True)

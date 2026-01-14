@@ -8,25 +8,53 @@ const AIPlanOverlay = ({
     explanation, 
     onUpdate, 
     onClose, 
-    onExecutionComplete // Callback when API finishes successfully
+    onExecutionComplete 
 }) => {
-  const [plan, setPlan] = useState(initialPlan);
+  const [plan, setPlan] = useState({});
   const [isEditing, setIsEditing] = useState(false);
   const [editedExplanation, setEditedExplanation] = useState("");
-  
-  // Local loading state for the execution button
   const [isExecuting, setIsExecuting] = useState(false);
 
-  // Load explanation into state
   useEffect(() => {
-    if (explanation) {
-      setEditedExplanation(explanation);
-    }
+    if (explanation) setEditedExplanation(explanation);
   }, [explanation]);
 
-  // Update local state when prop changes
+  // ✅ FIX: Enhanced Normalization Logic
   useEffect(() => {
-    setPlan(initialPlan);
+    if (initialPlan) {
+      const normalizedPlan = {};
+      Object.keys(initialPlan).forEach(key => {
+        const item = initialPlan[key];
+        let action = item.action ? item.action.toLowerCase().trim() : 'drop';
+        const reason = item.reason ? item.reason.toLowerCase() : '';
+
+        // 1. Text-Based Overrides (Fix common AI misclassifications)
+        // If reasoning says "categorical" but action says "scale", switch to encode
+        if (reason.includes('categorical') || reason.includes('nominal') || reason.includes('factor')) {
+            if (!reason.includes('ordinal') && !action.includes('label')) { 
+                action = 'one_hot_encode';
+            }
+        }
+
+        // 2. Standard Mapping
+        if (action.includes('label')) action = 'label_encode';
+        else if (action.includes('one_hot') || (action.includes('encode') && !action.includes('label'))) action = 'one_hot_encode';
+        else if (action.includes('scale') || action.includes('standard')) action = 'scale';
+        else if (action.includes('impute') || action.includes('missing') || action.includes('fill')) action = 'impute';
+        else if (action.includes('drop') || action.includes('remove') || action.includes('delete')) action = 'drop';
+        
+        // 3. Fallback for Administrative IDs
+        if (reason.includes('administrative') || reason.includes('id')) action = 'drop';
+
+        normalizedPlan[key] = {
+          ...item,
+          action: action,
+          // Ensure params exist if impute is chosen
+          params: action === 'impute' && !item.params ? 'mean' : item.params
+        };
+      });
+      setPlan(normalizedPlan);
+    }
     setIsEditing(false);
   }, [initialPlan]);
 
@@ -36,12 +64,12 @@ const AIPlanOverlay = ({
       [column]: {
         ...plan[column],
         action: newAction,
+        // Set default params when switching to impute manually
+        params: newAction === 'impute' ? 'mean' : undefined
       },
     };
     setPlan(updatedPlan);
-    if (onUpdate) {
-      onUpdate(updatedPlan);
-    }
+    if (onUpdate) onUpdate(updatedPlan);
     setIsEditing(true);
   };
   
@@ -50,7 +78,6 @@ const AIPlanOverlay = ({
       setIsEditing(true);
   }
 
-  // --- NEW: Handle Execution Logic Inside Overlay ---
   const handleExecute = async () => {
     if (!file) {
         alert("No file found to process.");
@@ -66,14 +93,10 @@ const AIPlanOverlay = ({
 
     try {
          const res = await axios.post(`${API_BASE_URL}/execute-approved-plan`, formData);
-
         
         console.log("✅ [AIPlanOverlay] Execution Success:", res.data);
-        
-        // Notify parent (Sidebar) with the result
-        if (onExecutionComplete) {
-            onExecutionComplete(res.data);
-        }
+        if (onExecutionComplete) onExecutionComplete(res.data);
+        onClose(); // Close the modal on success
         
     } catch (error) {
         console.error("❌ Error executing approved plan:", error);
@@ -82,45 +105,27 @@ const AIPlanOverlay = ({
         setIsExecuting(false);
     }
   };
-  // --------------------------------------------------
 
   if (!plan || Object.keys(plan).length === 0) return null;
 
   return (
     <div style={{
-      position: 'fixed',
-      top: 0,
-      left: 0,
-      width: '100%',
-      height: '100%',
-      backgroundColor: 'rgba(0, 0, 0, 0.5)', 
-      zIndex: 10000, 
-      display: 'flex',
-      justifyContent: 'center',
-      alignItems: 'center',
+      position: 'fixed', top: 0, left: 0, width: '100%', height: '100%',
+      backgroundColor: 'rgba(0, 0, 0, 0.5)', zIndex: 10000, 
+      display: 'flex', justifyContent: 'center', alignItems: 'center',
       backdropFilter: 'blur(3px)' 
     }}>
       
       <div style={{
-        width: '80%',
-        height: '85%',
-        backgroundColor: '#fff',
-        borderRadius: '12px',
-        boxShadow: '0 10px 30px rgba(0,0,0,0.3)',
-        display: 'flex',
-        flexDirection: 'column',
-        overflow: 'hidden',
-        position: 'relative'
+        width: '80%', height: '85%', backgroundColor: '#fff', borderRadius: '12px',
+        boxShadow: '0 10px 30px rgba(0,0,0,0.3)', display: 'flex', flexDirection: 'column',
+        overflow: 'hidden', position: 'relative'
       }}>
 
         {/* Header */}
         <div style={{
-          padding: '20px',
-          borderBottom: '1px solid #eee',
-          display: 'flex',
-          justifyContent: 'space-between',
-          alignItems: 'center',
-          backgroundColor: '#faf7fb'
+          padding: '20px', borderBottom: '1px solid #eee', display: 'flex',
+          justifyContent: 'space-between', alignItems: 'center', backgroundColor: '#faf7fb'
         }}>
           <h2 style={{ margin: 0, color: '#b730cfff', display: 'flex', alignItems: 'center', gap: '10px' }}>
             🏥 AI Clinical Data Plan
@@ -129,13 +134,8 @@ const AIPlanOverlay = ({
             onClick={onClose}
             disabled={isExecuting}
             style={{
-              background: 'transparent',
-              border: 'none',
-              fontSize: '24px',
-              cursor: 'pointer',
-              color: '#666',
-              fontWeight: 'bold',
-              opacity: isExecuting ? 0.5 : 1
+              background: 'transparent', border: 'none', fontSize: '24px',
+              cursor: 'pointer', color: '#666', fontWeight: 'bold', opacity: isExecuting ? 0.5 : 1
             }}
           >
             ×
@@ -149,11 +149,8 @@ const AIPlanOverlay = ({
           <div style={{ flex: 2, display: 'flex', flexDirection: 'column' }}>
             <h4 style={{ marginTop: 0, marginBottom: '10px', color: '#555' }}>Preprocessing Actions</h4>
             <div style={{ 
-              border: '1px solid #e0c8e6', 
-              borderRadius: '8px', 
-              flex: 1,
-              overflow: 'auto',
-              backgroundColor: '#fff'
+              border: '1px solid #e0c8e6', borderRadius: '8px', flex: 1,
+              overflow: 'auto', backgroundColor: '#fff'
             }}>
               <table style={{ width: '100%', borderCollapse: 'collapse', minWidth: '600px' }}>
                 <thead style={{ position: 'sticky', top: 0, background: '#f8f9fa', borderBottom: '2px solid #ddd', zIndex: 2 }}>
@@ -173,20 +170,29 @@ const AIPlanOverlay = ({
                           onChange={(e) => handleActionChange(column, e.target.value)}
                           disabled={isExecuting}
                           style={{ 
-                            padding: '8px', 
-                            borderRadius: '6px', 
-                            border: '1px solid #ccc',
+                            padding: '8px', borderRadius: '6px', border: '1px solid #ccc',
                             backgroundColor: details.action === 'drop' ? '#fff1f0' : '#f0f9ff',
                             color: details.action === 'drop' ? '#d9534f' : '#000',
-                            fontWeight: '500',
-                            width: '100%'
+                            fontWeight: '500', width: '100%'
                           }}
                         >
                           <option value="drop">Drop</option>
+                          <option value="impute">Impute (Fill Missing)</option>
                           <option value="scale">Scale (Standardize)</option>
                           <option value="one_hot_encode">One-Hot Encode</option>
                           <option value="label_encode">Label Encode</option>
                         </select>
+
+                        {/* Safe Params Display */}
+                        {details.action === 'impute' && (
+                          <div style={{fontSize: '10px', marginTop: '4px', color: '#666', fontStyle: 'italic'}}>
+                              Strategy: <b>
+                                {typeof details.params === 'object' 
+                                   ? JSON.stringify(details.params) 
+                                   : (details.params || 'mean')}
+                              </b>
+                          </div>
+                        )}
                       </td>
                       <td style={{ padding: '15px', color: '#666', lineHeight: '1.5', fontStyle: 'italic' }}>
                         {details.reason || "No specific reason provided."}
@@ -207,41 +213,23 @@ const AIPlanOverlay = ({
               disabled={isExecuting}
               placeholder="AI explanation will appear here..."
               style={{
-                flex: 1,
-                width: '100%',
-                boxSizing: 'border-box',
-                resize: 'none',
-                fontSize: '14px',
-                lineHeight: '1.6',
-                color: '#333',
-                padding: '15px',
-                backgroundColor: '#fff',
-                border: '1px solid #e0c8e6',
-                borderRadius: '8px',
-                fontFamily: 'inherit',
-                marginBottom: '20px'
+                flex: 1, width: '100%', boxSizing: 'border-box', resize: 'none',
+                fontSize: '14px', lineHeight: '1.6', color: '#333', padding: '15px',
+                backgroundColor: '#fff', border: '1px solid #e0c8e6', borderRadius: '8px',
+                fontFamily: 'inherit', marginBottom: '20px'
               }}
             />
             
             <button
-              onClick={handleExecute} // Call the local execute function
+              onClick={handleExecute}
               disabled={isExecuting}
               style={{
-                width: '100%',
-                padding: '15px',
-                border: 'none',
-                borderRadius: '8px',
+                width: '100%', padding: '15px', border: 'none', borderRadius: '8px',
                 backgroundColor: isExecuting ? '#6c757d' : '#28a745',
-                color: 'white',
-                fontWeight: 'bold',
-                fontSize: '16px',
+                color: 'white', fontWeight: 'bold', fontSize: '16px',
                 cursor: isExecuting ? 'not-allowed' : 'pointer',
-                boxShadow: '0 4px 6px rgba(0,0,0,0.2)',
-                transition: 'background 0.2s',
-                display: 'flex',
-                justifyContent: 'center',
-                alignItems: 'center',
-                gap: '10px'
+                boxShadow: '0 4px 6px rgba(0,0,0,0.2)', transition: 'background 0.2s',
+                display: 'flex', justifyContent: 'center', alignItems: 'center', gap: '10px'
               }}
               onMouseOver={(e) => !isExecuting && (e.target.style.backgroundColor = '#218838')}
               onMouseOut={(e) => !isExecuting && (e.target.style.backgroundColor = '#28a745')}
