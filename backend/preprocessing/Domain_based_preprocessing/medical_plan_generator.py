@@ -1,202 +1,350 @@
 import pandas as pd
 import json
-import re
 import sys
-import traceback
 import os
-from typing import Dict, Any, Optional, Tuple
+import argparse
+from typing import Dict, Any
 from huggingface_hub import InferenceClient
+from dotenv import load_dotenv
+
+# ============================================================
+# ENV
+# ============================================================
+
+load_dotenv(os.path.join(os.path.dirname(__file__), '..', '..', '.env'))
+
+HF_TOKEN = os.getenv("HF_TOKEN")
+
+if not HF_TOKEN:
+    raise ValueError("❌ HF_TOKEN not found in .env")
+
+# ============================================================
+# MODEL CONFIG
+# ============================================================
+
+HF_MODEL = "meta-llama/Llama-3.1-8B-Instruct:novita"
+client = InferenceClient(api_key=HF_TOKEN)
+
+# ============================================================
+# JSON SAFETY UTILITIES
+# ============================================================
+
+def auto_repair_json(text: str) -> str:
+    if not text:
+        return text
+
+    open_braces = text.count("{")
+    close_braces = text.count("}")
+    if close_braces < open_braces:
+        text += "}" * (open_braces - close_braces)
+
+    open_brackets = text.count("[")
+    close_brackets = text.count("]")
+    if close_brackets < open_brackets:
+        text += "]" * (open_brackets - close_brackets)
+
+    return text
+
+
+def extract_json_block(text: str) -> str:
+    if not text:
+        return ""
+
+    clean = text.replace("```json", "").replace("```", "").strip()
+
+    if "{" in clean and "}" in clean:
+        start = clean.find("{")
+        end = clean.rfind("}") + 1
+        clean = clean[start:end]
+
+    return clean
+
+# ============================================================
+# HF CALL
+# ============================================================
+
+def ask_hf_llm(prompt: str) -> str:
+    try:
+        stream = client.chat.completions.create(
+            model=HF_MODEL,
+            messages=[{"role": "user", "content": prompt}],
+            temperature=0.05,
+            max_tokens=4096,
+            stream=True,
+        )
+
+        output = ""
+        for chunk in stream:
+            if chunk.choices and chunk.choices[0].delta:
+                content = chunk.choices[0].delta.content
+                if content:
+                    output += content
+
+        return output
+
+    except Exception as e:
+        print(f"❌ HF LLM Error: {e}", file=sys.stderr)
+        return ""
+
+# ============================================================
+# ENGINE
+# ============================================================
 
 class MedicalPlanGenerator:
     """
-    Advanced Domain-Aware Planning Engine.
-    Uses Llama-3 to analyze semantic meaning of medical features 
-    to create a clinically valid preprocessing pipeline.
+    Clinical-grade Medical AI Planning Engine
+    (HF | Llama-3.1-8B-Instruct | Hospital-grade prompting)
     """
-    
-    # We allow the AI to choose from these executable actions
-    ALLOWED_ACTIONS = {"drop", "impute", "scale", "one_hot_encode", "label_encode"}
 
-    def __init__(
-        self,
-        hf_token: str,
-        # ✅ UPGRADED MODEL (Llama-3.3 70B via Groq/HF)
-        model_id: str = "meta-llama/Llama-3.3-70B-Instruct", 
-        target_col: str = "Level",
-    ):
-        if not hf_token:
-            raise ValueError("Hugging Face token is required.")
-        
-        self.client = InferenceClient(token=hf_token)
-        self.model_id = model_id
+    def __init__(self, target_col: str = "Level"):
         self.target_col = target_col
-        
-        # Force UTF-8 for reliable logging
         sys.stdout.reconfigure(encoding='utf-8')
-        print(f"🚀 Initializing Clinical Reasoning Engine ({model_id})...", file=sys.stderr, flush=True)
+        print(f"🚀 Initializing Clinical Reasoning Engine (HF | {HF_MODEL})...", file=sys.stderr, flush=True)
 
-    def _call_api(self, messages: list, max_new_tokens: int) -> str:
-        """Executes the LLM inference with high-stakes configuration."""
-        try:
-            response = self.client.chat.completions.create(
-                model=self.model_id,
-                messages=messages,
-                max_tokens=max_new_tokens,
-                temperature=0.1, # Near-zero temperature for deterministic output
-                stream=False,
-            )
-            return response.choices[0].message.content
-        except Exception as e:
-            print(f"❌ API Request Failed: {e}", file=sys.stderr)
-            # Fallback to smaller model if 70B fails or is busy
-            if "model_not_found" in str(e) or "404" in str(e):
-                print("⚠️ 70B Model unavailable. Falling back to 8B...", file=sys.stderr)
-                self.model_id = "meta-llama/Llama-3.1-8B-Instruct"
-                return self._call_api(messages, max_new_tokens)
-            return ""
+    # ---------------- DATA PROFILE ----------------
 
-    @staticmethod
-    def _extract_json(text: str) -> Optional[str]:
-        """Robustly extracts JSON payload from mixed natural language output."""
-        if not text: return None
-        # Attempt to find markdown code blocks
-        fenced = re.search(r"```json\s*(.*)```", text, re.DOTALL | re.IGNORECASE)
-        candidate = fenced.group(1).strip() if fenced else text
-        
-        # Fallback: Brute force search for JSON boundaries
-        start = candidate.find("{")
-        end = candidate.rfind("}")
-        
-        if start != -1 and end != -1:
-            return candidate[start : end + 1]
-        return None
-
-    def generate_plan(self, df: pd.DataFrame) -> Dict[str, Any]:
-        print("\n--- Generating Clinical Preprocessing Strategy ---", file=sys.stderr, flush=True)
-        
-        # 1. GENERATE RICH CONTEXT
+    def get_dataset_profile(self, df: pd.DataFrame) -> str:
         col_stats = []
         for col in df.columns:
             dtype = str(df[col].dtype)
-            missing_count = int(df[col].isnull().sum())
-            unique_count = int(df[col].nunique())
-            
-            # Extract non-null samples
+            missing = int(df[col].isnull().sum())
+            unique = int(df[col].nunique())
             samples = list(df[col].dropna().unique()[:5])
-            
+
             stat_str = (
-                f"- Column: `{col}` | Type: {dtype} | Missing: {missing_count} | "
-                f"Unique Values: {unique_count} | Sample Data: {samples}"
+                f"- Column: `{col}` | Type: {dtype} | Missing: {missing} | "
+                f"Unique Values: {unique} | Sample Data: {samples}"
             )
             col_stats.append(stat_str)
-            
-        column_info = "\n".join(col_stats)
 
-        # 2. SYSTEM PERSONA
-        system_prompt = (
-            "You are a Principal Data Scientist specializing in Clinical Informatics. "
-            "You are tasked with preparing a raw Electronic Health Record (EHR) dataset for a predictive machine learning model. "
-            "Your priority is Clinical Validity: preserving biological signals while eliminating administrative noise and bias."
-        )
+        return "\n".join(col_stats)
 
-        # 3. ADVANCED REASONING PROMPT
-        user_prompt = f"""
-Analyze the medical dataset schema below. Perform a semantic analysis of each column to determine its role (Demographic, Vital Sign, ID, or Outcome).
-Based on this analysis, construct a preprocessing plan to predict the target: '{self.target_col}'.
+    # ============================================================
+    # PHASE 1 — CLINICAL STRATEGY REPORT
+    # ============================================================
 
-### DATASET PROFILING:
-{column_info}
+    def generate_clinical_report(self, df: pd.DataFrame) -> str:
+        print("\n--- Phase 1: Generating Clinical Strategy Report ---", file=sys.stderr, flush=True)
+        profile = self.get_dataset_profile(df)
 
-### CLINICAL ML TOOLKIT:
-Select the most appropriate transformation for each feature from the following strategies:
-1. **Drop**: For administrative identifiers (e.g., Patient IDs, Serial Numbers) that carry no biological signal and cause leakage.
-2. **Impute**: **Mandatory if 'Missing' > 0**. 
-   - Use 'mean' for continuous physiological measures (to preserve population baseline).
-   - Use 'most_frequent' for categorical risk factors.
-3. **Scale**: For continuous biomarkers (e.g., BMI, Age, Lab Results) to normalize units for algorithms like K-Means.
-4. **One-Hot Encode**: For nominal categories (e.g., Gender, History) to prevent ordinal bias.
-5. **Label Encode**: For ordinal variables (Low/Med/High) or the specific Target Column.
+        prompt = f"""
+SYSTEM ROLE:
+You are a **Chief Clinical Informatics Officer (CCIO)**, **Clinical AI Architect**, and **Principal Biomedical Data Scientist**.
+You design regulatory-grade AI systems for hospitals, public health agencies, and medical research institutions.
 
-### OUTPUT REQUIREMENTS:
-Return a raw JSON object mapping Column Names to their processing strategy.
-Format:
+You follow:
+- Clinical epidemiology
+- Biomedical signal modeling
+- EHR informatics standards
+- Population health analytics
+- Bias-safe AI design
+- FDA SaMD principles
+- HIPAA/GDPR governance
+- Medical AI interpretability frameworks
+
+==================================================
+TASK:
+Generate a **Clinical Data Strategy Report** for predictive modeling.
+
+TARGET VARIABLE:
+'{self.target_col}'
+
+==================================================
+DATASET PROFILE:
+{profile}
+
+==================================================
+CLINICAL ANALYSIS INSTRUCTIONS:
+
+Reason using **clinical semantics**, not data types.
+
+Analyze:
+- Physiological meaning
+- Pathophysiological relevance
+- Clinical interpretability
+- Diagnostic relevance
+- Prognostic relevance
+- Population health impact
+- Risk stratification value
+- Predictive stability
+- Confounding risk
+- Leakage risk
+- Proxy discrimination risk
+- Bias amplification risk
+- Ethical implications
+- Privacy sensitivity
+- Governance classification
+- Regulatory sensitivity
+
+==================================================
+STRUCTURE:
+
+## 1. Clinical Executive Summary
+## 2. Clinical Privacy & Governance Framework
+## 3. Missing Data Clinical Strategy
+## 4. Clinical Feature Engineering Strategy
+## 5. Clinical Modeling Readiness
+
+==================================================
+STYLE:
+Medical-grade • Academic • Regulatory-grade
+
+FORMAT: Markdown  
+LENGTH: 500–700 words
+"""
+
+        return ask_hf_llm(prompt)
+
+    # ============================================================
+    # PHASE 2 — EXECUTION PLAN
+    # ============================================================
+
+    def _robust_json_generation(self, prompt: str, df_cols) -> Dict[str, Any]:
+        for attempt in range(3):
+            raw = ask_hf_llm(prompt)
+            clean = extract_json_block(raw)
+            repaired = auto_repair_json(clean)
+
+            try:
+                data = json.loads(repaired)
+
+                # completeness validation
+                if len(data.keys()) < len(df_cols):
+                    raise ValueError("Incomplete AI plan (missing columns)")
+
+                return data
+            except Exception as e:
+                print(f"⚠️ JSON retry {attempt+1}: {e}", file=sys.stderr)
+
+        raise RuntimeError("❌ Critical failure: Invalid JSON from HF LLM")
+
+    def _normalize_plan(self, data: Dict[str, Any]) -> Dict[str, Any]:
+        normalized = {}
+        for col, info in data.items():
+            if not isinstance(info, dict):
+                continue
+            normalized[col] = {
+                "action": info.get("action"),
+                "params": info.get("params"),
+                "reason": info.get("reason")
+            }
+        return normalized
+
+    def generate_plan_from_report(self, df: pd.DataFrame, report: str) -> Dict[str, Any]:
+        print("\n--- Phase 2: Generating Execution Plan ---", file=sys.stderr, flush=True)
+        profile = self.get_dataset_profile(df)
+
+        prompt = f"""
+SYSTEM ROLE:
+You are a **Principal Clinical ML Architect** and **Biomedical AI Engineer**.
+
+==================================================
+CLINICAL STRATEGY REPORT:
+{report}
+
+==================================================
+DATASET PROFILE:
+{profile}
+
+==================================================
+TARGET VARIABLE:
+'{self.target_col}'
+
+==================================================
+TASK:
+Design a **clinically-safe, regulation-ready preprocessing pipeline**.
+
+==================================================
+AVAILABLE TRANSFORMATIONS:
+
+drop, impute(mean/mode), scale, one_hot_encode, label_encode
+
+==================================================
+STRICT CLINICAL RULES:
+
+- EVERY column must appear exactly once
+- NO missing columns
+- NO duplicates
+- NO dtype-based logic
+- Biomedical reasoning only
+- Prevent leakage
+- Prevent proxy discrimination
+- Preserve biological signal
+- Preserve interpretability
+- Maintain patient privacy
+- Regulatory safe
+- Hospital safe
+
+==================================================
+OUTPUT CONSTRAINTS:
+
+- VALID JSON ONLY
+- NO markdown
+- NO text
+- NO comments
+- NO explanations outside JSON
+
+==================================================
+JSON FORMAT:
+
 {{
   "Column_Name": {{
-    "action": "strategy_name", 
-    "params": "optional_parameter", 
-    "reason": "Deep clinical justification..."
+    "action": "drop|impute|scale|one_hot_encode|label_encode",
+    "params": "mean|mode|null",
+    "reason": "Clinically grounded biomedical justification"
   }}
 }}
 
-**Generate JSON:**
+==================================================
+Return JSON ONLY.
 """
-        messages = [
-            {"role": "system", "content": system_prompt},
-            {"role": "user", "content": user_prompt},
-        ]
 
-        # Call API
-        response = self._call_api(messages, max_new_tokens=4096)
-        plan_str = self._extract_json(response)
-        
-        try:
-            return json.loads(plan_str)
-        except:
-            print(f"❌ JSON Decode Error. Raw response:\n{response}", file=sys.stderr)
-            return {}
+        data = self._robust_json_generation(prompt, df.columns)
+        return self._normalize_plan(data)
 
-    def explain_plan_and_guide(self, plan: Dict[str, Any]) -> str:
-        """Generates a professional Executive Summary suitable for stakeholders."""
-        print("\n--- Generating Executive Report ---", file=sys.stderr, flush=True)
-        plan_str = json.dumps(plan, indent=2)
-        
-        messages = [
-            {"role": "system", "content": "You are a Lead AI Researcher presenting to a Medical Review Board."},
-            {"role": "user", "content": f"""
-Based on the following Preprocessing Plan, generate a structured Executive Summary.
-
-PLAN DATA:
-{plan_str}
-
-**REPORT SECTIONS:**
-1. **Executive Summary:** High-level assessment of data quality and the chosen strategy.
-2. **Signal Preservation (Imputation):** Discuss how missing data was handled to minimize bias (Mean vs Mode reasoning).
-3. **Feature Engineering Strategy:** Justify why specific biomarkers were Scaled vs Encoded.
-4. **Data Hygiene:** Confirm removal of administrative columns (IDs) to ensure patient privacy and model generalizability.
-
-Format using Markdown. Use authoritative, professional language.
-"""}
-        ]
-        return self._call_api(messages, 2048)
+    # ============================================================
+    # RUN
+    # ============================================================
 
     def run(self, df: pd.DataFrame):
-        plan = self.generate_plan(df)
-        explanation = self.explain_plan_and_guide(plan)
-        return plan, explanation
+        report = self.generate_clinical_report(df)
+        plan = self.generate_plan_from_report(df, report)
+        return plan, report
+
+# ============================================================
+# CLI
+# ============================================================
 
 if __name__ == "__main__":
-    if len(sys.argv) < 2: 
-        print("Usage: python medical_plan_generator.py <file_path>", file=sys.stderr)
-        sys.exit(1)
-        
-    FILE_PATH = sys.argv[1]
-    
-    # Robust CSV Loading (Handling flexible engines)
-    try:
-        raw_df = pd.read_csv(FILE_PATH, sep=None, engine='python')
-    except:
-        raw_df = pd.read_csv(FILE_PATH)
-    
-    HF_TOKEN = os.getenv("HF_TOKEN")
-    
-    generator = MedicalPlanGenerator(HF_TOKEN)
-    plan, explanation = generator.run(raw_df)
+    parser = argparse.ArgumentParser()
+    parser.add_argument("file_path", help="Path to CSV")
+    parser.add_argument("--regenerate", help="Report text to regenerate plan from", default=None)
+    args = parser.parse_args()
 
-    # Standard Output for Node.js IPC
-    print("__PLAN_START__", flush=True)
-    print(json.dumps(plan, indent=2), flush=True)
-    print("__PLAN_END__", flush=True)
-    
-    print("__EXPLANATION_START__", flush=True)
-    print(explanation, flush=True)
-    print("__EXPLANATION_END__", flush=True)
+    try:
+        try:
+            raw_df = pd.read_csv(args.file_path, sep=None, engine='python')
+        except:
+            raw_df = pd.read_csv(args.file_path)
+
+        generator = MedicalPlanGenerator()
+
+        if args.regenerate:
+            plan = generator.generate_plan_from_report(raw_df, args.regenerate)
+            print("__PLAN_START__")
+            print(json.dumps(plan, indent=2))
+            print("__PLAN_END__")
+
+        else:
+            plan, explanation = generator.run(raw_df)
+
+            print("__PLAN_START__", flush=True)
+            print(json.dumps(plan, indent=2), flush=True)
+            print("__PLAN_END__", flush=True)
+            
+            print("__EXPLANATION_START__", flush=True)
+            print(explanation, flush=True)
+            print("__EXPLANATION_END__", flush=True)
+
+    except Exception as e:
+        print(f"❌ Execution Failed: {e}", file=sys.stderr)
