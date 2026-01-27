@@ -1,10 +1,10 @@
-import React, { useState, useEffect, useCallback } from "react";
+import React, { useState, useEffect, useCallback, useMemo } from "react";
 import ReactFlow, {
   Background, Controls, MiniMap, applyNodeChanges, applyEdgeChanges, useReactFlow,
 } from "reactflow";
 import "reactflow/dist/style.css";
 
-import nodeTypes from "./nodeTypes";
+import nodeTypesRaw from "./nodeTypes"; // Rename import
 import { ResultsPanel } from "./ResultsPanel";
 import ErrorPopup from '../ErrorPopup';
 
@@ -29,6 +29,9 @@ const FlowCanvasInner = ({ file, domain, setGlobalLoading }) => {
   const [branchMap, setBranchMap] = useState(new Map()); 
 
   const { fitView, project } = useReactFlow();
+
+  // ✅ MEMOIZE NODE TYPES TO FIX WARNING
+  const nodeTypes = useMemo(() => nodeTypesRaw, []);
 
   useEffect(() => {
     if (results) setIsResultsOpen(true);
@@ -143,15 +146,6 @@ const FlowCanvasInner = ({ file, domain, setGlobalLoading }) => {
         });
 
         // C. Continuation Labels (The "Lower Branch" fix)
-        // We look up the branch number of the *parent* chain to label this continuation
-        // For simplicity in this logic, we know continuationHeads continues the parent's branch.
-        // We need to find the branch number associated with the *ancestor* head.
-        // However, a simpler visual trick: The user wants to see "Branch X" repeated.
-        
-        // Note: For perfect consistency, we rely on the visual traverse. 
-        // If a node is in `continuationHeads`, it inherits its parent's branch number.
-        // We can brute-force find it by checking nearest upstream key in branchMap.
-        
         continuationHeads.forEach(nodeId => {
              // Find upstream branch number
              let curr = childToParent(nodeId, edges);
@@ -234,10 +228,9 @@ const FlowCanvasInner = ({ file, domain, setGlobalLoading }) => {
     file, domain, nodes, edges, project, setNodes, setEdges, setError, mainBranchReady
   });
 
-  // Pass validation to Pipeline Runner
   const { handleRunConfig } = usePipelineRunner({
     localFile, nodes, edges, setResults, setError, setLoading: setGlobalLoading,
-    onValidate: () => validatePipeline(nodes, edges) // <--- HOOK UP VALIDATION HERE
+    onValidate: () => validatePipeline(nodes, edges)
   });
 
   const onEdgesChange = useCallback((changes) => setEdges((eds) => applyEdgeChanges(changes, eds)), [setEdges]);
@@ -274,7 +267,7 @@ const FlowCanvasInner = ({ file, domain, setGlobalLoading }) => {
           onNodesChange={onNodesChange}
           onEdgesChange={onEdgesChange}
           onConnect={onConnect}
-          nodeTypes={nodeTypes}
+          nodeTypes={nodeTypes} // ✅ Passing memoized nodeTypes
           fitView
         >
           <MiniMap />

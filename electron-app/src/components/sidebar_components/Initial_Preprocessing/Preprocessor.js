@@ -1,11 +1,10 @@
-import React, { useState } from "react"; // Removed useEffect from import
+import React, { useState } from "react"; 
 import axios from "axios";
 import ErrorPopup from '../../ErrorPopup'; 
 import { API_BASE_URL } from "../../../config";
 
 const Preprocessor = ({ file, detectedDomain, setLoading, onPlanGenerated }) => {
   const [error, setError] = useState(null); 
-
 
   const handlePreprocess = async (type) => {
     if (!file) {
@@ -20,14 +19,21 @@ const Preprocessor = ({ file, detectedDomain, setLoading, onPlanGenerated }) => 
     setLoading(true);
 
     if (type === "domain") {
-      // NEW LOGIC: Call the plan generator
       try {
-        console.log("🤖 Calling Gemma for a medical plan...");
+        console.log("🤖 Calling Medical Plan Generator...");
         const res = await axios.post(`${API_BASE_URL}/generate-medical-plan`, formData);
-        console.log("✅ Plan received from backend:", res.data);
+        console.log("✅ Plan received:", res.data);
+        
+        // --- FIX IS HERE ---
+        // The backend returns: { plan: {}, summary: "...", strategy: "..." }
+        // We need to package summary/strategy into the second argument
         if (onPlanGenerated) {
-            onPlanGenerated(res.data.plan, res.data.explanation);
+            onPlanGenerated(res.data.plan, { 
+                summary: res.data.summary, 
+                strategy: res.data.strategy 
+            });
         }
+
       } catch (err) {
         console.error("❌ Error generating medical plan:", err);
         setError(err.response?.data?.message || "Failed to generate AI plan.");
@@ -35,13 +41,13 @@ const Preprocessor = ({ file, detectedDomain, setLoading, onPlanGenerated }) => 
         setLoading(false);
       }
     } else {
+      // Normal Preprocessing Logic
       try {
         formData.append("isCustom", "false");
         console.log(`⚙️ Starting normal preprocessing...`);
         const res = await axios.post(`${API_BASE_URL}/preprocess-normal`, formData);
-        console.log("✅ Preprocessing response:", res.data);
+        
         if (res.data.graph && res.data.outputs) {
-          console.log("🚀 Firing 'normal-run-complete' event!");
           window.dispatchEvent(new CustomEvent("normal-run-complete", { detail: res.data }));
         }
       } catch (err) {

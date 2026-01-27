@@ -2,105 +2,151 @@ import React, { useState, useEffect } from 'react';
 import axios from 'axios';
 import { API_BASE_URL } from "../../../config"; 
 
+// Markdown Renderer
+const MarkdownRenderer = ({ text }) => (
+  <div style={{ whiteSpace: 'pre-wrap', lineHeight: '1.6', color: '#444', fontSize: '13px' }}>
+    {text && text.split('\n').map((line, i) => {
+      if (line.startsWith('###')) return <h4 key={i} style={{color:'#2c3e50', marginTop:'15px'}}>{line.replace(/#/g, '')}</h4>;
+      if (line.startsWith('**')) return <p key={i} style={{fontWeight:'bold'}}>{line.replace(/\*\*/g, '')}</p>;
+      return <p key={i} style={{marginBottom:'5px'}}>{line}</p>;
+    })}
+  </div>
+);
+
+// Action Badge Colors
+const getActionColor = (action) => {
+  switch (action) {
+    case 'drop': return { bg: '#ffebee', text: '#c62828', border: '#ffcdd2' }; 
+    case 'impute': return { bg: '#e3f2fd', text: '#1565c0', border: '#bbdefb' };
+    case 'scale': return { bg: '#e8f5e9', text: '#2e7d32', border: '#c8e6c9' }; 
+    case 'one_hot_encode': return { bg: '#fff3e0', text: '#ef6c00', border: '#ffe0b2' };
+    case 'label_encode': return { bg: '#f3e5f5', text: '#6a1b9a', border: '#e1bee7' };
+    default: return { bg: '#f5f5f5', text: '#616161', border: '#e0e0e0' };
+  }
+};
+
 const AIPlanOverlay = ({ 
     file, 
     initialPlan, 
-    explanation, 
-    onUpdate, 
+    explanation, // Expecting object: { summary, strategy }
     onClose, 
     onExecutionComplete 
 }) => {
+  const [viewStep, setViewStep] = useState('report'); // 'report' = Step 1, 'plan' = Step 2
   const [plan, setPlan] = useState({});
-  const [isEditing, setIsEditing] = useState(false);
-  const [editedExplanation, setEditedExplanation] = useState("");
+  
+  // State for text content
+  const [summaryText, setSummaryText] = useState("Loading summary...");
+  const [editorText, setEditorText] = useState("Loading strategy...");
+  
   const [isExecuting, setIsExecuting] = useState(false);
+  const [isSyncing, setIsSyncing] = useState(false);
+
+  // --- INITIALIZATION EFFECTS ---
 
   useEffect(() => {
-    if (explanation) setEditedExplanation(explanation);
+    // Robustly handle the explanation prop
+    if (explanation) {
+        if (typeof explanation === 'object') {
+            setSummaryText(explanation.summary || "No clinical summary provided.");
+            setEditorText(explanation.strategy || "No technical strategy provided.");
+        } else {
+            // Legacy fallback if backend sends plain string
+            setSummaryText(explanation);
+            setEditorText(explanation);
+        }
+    }
   }, [explanation]);
 
-  // ✅ FIX: Enhanced Normalization Logic
   useEffect(() => {
-    if (initialPlan) {
-      const normalizedPlan = {};
-      Object.keys(initialPlan).forEach(key => {
-        const item = initialPlan[key];
+    if (initialPlan) normalizeAndSetPlan(initialPlan);
+  }, [initialPlan]);
+
+  // --- HELPER FUNCTIONS ---
+
+  const normalizeAndSetPlan = (rawPlan) => {
+      const normalized = {};
+      if (!rawPlan) return;
+      
+      Object.keys(rawPlan).forEach(key => {
+        const item = rawPlan[key];
         let action = item.action ? item.action.toLowerCase().trim() : 'drop';
-        const reason = item.reason ? item.reason.toLowerCase() : '';
-
-        // 1. Text-Based Overrides (Fix common AI misclassifications)
-        // If reasoning says "categorical" but action says "scale", switch to encode
-        if (reason.includes('categorical') || reason.includes('nominal') || reason.includes('factor')) {
-            if (!reason.includes('ordinal') && !action.includes('label')) { 
-                action = 'one_hot_encode';
-            }
-        }
-
-        // 2. Standard Mapping
-        if (action.includes('label')) action = 'label_encode';
-        else if (action.includes('one_hot') || (action.includes('encode') && !action.includes('label'))) action = 'one_hot_encode';
-        else if (action.includes('scale') || action.includes('standard')) action = 'scale';
-        else if (action.includes('impute') || action.includes('missing') || action.includes('fill')) action = 'impute';
-        else if (action.includes('drop') || action.includes('remove') || action.includes('delete')) action = 'drop';
         
-        // 3. Fallback for Administrative IDs
-        if (reason.includes('administrative') || reason.includes('id')) action = 'drop';
-
-        normalizedPlan[key] = {
+        // Standardize action names
+        if (action.includes('label')) action = 'label_encode';
+        else if (action.includes('one_hot')) action = 'one_hot_encode';
+        else if (action.includes('scale')) action = 'scale';
+        else if (action.includes('impute')) action = 'impute';
+        else if (action.includes('drop')) action = 'drop';
+        
+        normalized[key] = {
           ...item,
           action: action,
-          // Ensure params exist if impute is chosen
           params: action === 'impute' && !item.params ? 'mean' : item.params
         };
       });
-      setPlan(normalizedPlan);
-    }
-    setIsEditing(false);
-  }, [initialPlan]);
+      setPlan(normalized);
+  };
 
   const handleActionChange = (column, newAction) => {
-    const updatedPlan = {
-      ...plan,
-      [column]: {
-        ...plan[column],
+    setPlan(prev => ({
+      ...prev,
+      [column]: { 
+        ...prev[column], 
         action: newAction,
-        // Set default params when switching to impute manually
         params: newAction === 'impute' ? 'mean' : undefined
-      },
-    };
-    setPlan(updatedPlan);
-    if (onUpdate) onUpdate(updatedPlan);
-    setIsEditing(true);
+      }
+    }));
   };
-  
-  const handleExplanationChange = (e) => {
-      setEditedExplanation(e.target.value);
-      setIsEditing(true);
-  }
+
+  // --- API HANDLERS ---
+
+  const handleSyncTable = async () => {
+      if (!editorText || !editorText.trim()) {
+          alert("The strategy editor is empty. Cannot sync.");
+          return;
+      }
+
+      setIsSyncing(true);
+      const formData = new FormData();
+      formData.append("dataset", file);
+      // Send the Edited Technical Strategy to Phase 3 (JSON Mapper)
+      formData.append("report", editorText); 
+
+      try {
+          const res = await axios.post(`${API_BASE_URL}/regenerate-plan`, formData);
+          
+          // Use res.data.plan directly if the structure matches
+          if (res.data.plan) {
+            normalizeAndSetPlan(res.data.plan);
+          } else {
+            alert("Sync failed: Backend returned empty plan.");
+          }
+      } catch (err) {
+          console.error("Sync Error:", err);
+          alert("Failed to sync table. Check console for details.");
+      } finally {
+          setIsSyncing(false);
+      }
+  };
 
   const handleExecute = async () => {
-    if (!file) {
-        alert("No file found to process.");
-        return;
-    }
-
+    if (!file) return;
     setIsExecuting(true);
-    console.log("✅ [AIPlanOverlay] Executing Plan...", plan);
-
+    
     const formData = new FormData();
     formData.append("dataset", file);
     formData.append("plan", JSON.stringify(plan));
 
     try {
-         const res = await axios.post(`${API_BASE_URL}/execute-approved-plan`, formData);
-        
-        console.log("✅ [AIPlanOverlay] Execution Success:", res.data);
-        if (onExecutionComplete) onExecutionComplete(res.data);
-        onClose(); // Close the modal on success
-        
+        const res = await axios.post(`${API_BASE_URL}/execute-approved-plan`, formData);
+        if (onExecutionComplete) {
+            onExecutionComplete(res.data);
+        }
+        onClose();
     } catch (error) {
-        console.error("❌ Error executing approved plan:", error);
-        alert("Failed to execute the plan. Check console for details.");
+        console.error("Execution Error:", error);
+        alert("Failed to execute plan. Please check backend logs.");
     } finally {
         setIsExecuting(false);
     }
@@ -110,147 +156,174 @@ const AIPlanOverlay = ({
 
   return (
     <div style={{
-      position: 'fixed', top: 0, left: 0, width: '100%', height: '100%',
-      backgroundColor: 'rgba(0, 0, 0, 0.5)', zIndex: 10000, 
+      position: 'fixed', top: 0, left: 0, width: '100vw', height: '100vh',
+      backgroundColor: 'rgba(9, 30, 66, 0.7)', zIndex: 10000, 
       display: 'flex', justifyContent: 'center', alignItems: 'center',
-      backdropFilter: 'blur(3px)' 
+      backdropFilter: 'blur(8px)', fontFamily: '-apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif'
     }}>
-      
       <div style={{
-        width: '80%', height: '85%', backgroundColor: '#fff', borderRadius: '12px',
-        boxShadow: '0 10px 30px rgba(0,0,0,0.3)', display: 'flex', flexDirection: 'column',
-        overflow: 'hidden', position: 'relative'
+        width: '95%', height: '92%', backgroundColor: '#fff', borderRadius: '12px',
+        boxShadow: '0 25px 50px -12px rgba(0, 0, 0, 0.25)', 
+        display: 'flex', flexDirection: 'column', overflow: 'hidden'
       }}>
-
-        {/* Header */}
-        <div style={{
-          padding: '20px', borderBottom: '1px solid #eee', display: 'flex',
-          justifyContent: 'space-between', alignItems: 'center', backgroundColor: '#faf7fb'
-        }}>
-          <h2 style={{ margin: 0, color: '#b730cfff', display: 'flex', alignItems: 'center', gap: '10px' }}>
-            🏥 AI Clinical Data Plan
-          </h2>
-          <button 
-            onClick={onClose}
-            disabled={isExecuting}
-            style={{
-              background: 'transparent', border: 'none', fontSize: '24px',
-              cursor: 'pointer', color: '#666', fontWeight: 'bold', opacity: isExecuting ? 0.5 : 1
-            }}
-          >
-            ×
-          </button>
-        </div>
-
-        {/* Body */}
-        <div style={{ flex: 1, padding: '20px', overflowY: 'auto', display: 'flex', gap: '20px' }}>
-          
-          {/* Left Column: The Plan Table */}
-          <div style={{ flex: 2, display: 'flex', flexDirection: 'column' }}>
-            <h4 style={{ marginTop: 0, marginBottom: '10px', color: '#555' }}>Preprocessing Actions</h4>
-            <div style={{ 
-              border: '1px solid #e0c8e6', borderRadius: '8px', flex: 1,
-              overflow: 'auto', backgroundColor: '#fff'
-            }}>
-              <table style={{ width: '100%', borderCollapse: 'collapse', minWidth: '600px' }}>
-                <thead style={{ position: 'sticky', top: 0, background: '#f8f9fa', borderBottom: '2px solid #ddd', zIndex: 2 }}>
-                  <tr>
-                    <th style={{ textAlign: 'left', padding: '15px', color: '#555' }}>Column Name</th>
-                    <th style={{ textAlign: 'left', padding: '15px', color: '#555' }}>Action</th>
-                    <th style={{ textAlign: 'left', padding: '15px', color: '#555' }}>Clinical Logic</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {Object.entries(plan).map(([column, details]) => (
-                    <tr key={column} style={{ borderBottom: '1px solid #f0f0f0' }}>
-                      <td style={{ padding: '15px', fontWeight: '600', color: '#333' }}>{column}</td>
-                      <td style={{ padding: '15px' }}>
-                        <select
-                          value={details.action}
-                          onChange={(e) => handleActionChange(column, e.target.value)}
-                          disabled={isExecuting}
-                          style={{ 
-                            padding: '8px', borderRadius: '6px', border: '1px solid #ccc',
-                            backgroundColor: details.action === 'drop' ? '#fff1f0' : '#f0f9ff',
-                            color: details.action === 'drop' ? '#d9534f' : '#000',
-                            fontWeight: '500', width: '100%'
-                          }}
-                        >
-                          <option value="drop">Drop</option>
-                          <option value="impute">Impute (Fill Missing)</option>
-                          <option value="scale">Scale (Standardize)</option>
-                          <option value="one_hot_encode">One-Hot Encode</option>
-                          <option value="label_encode">Label Encode</option>
-                        </select>
-
-                        {/* Safe Params Display */}
-                        {details.action === 'impute' && (
-                          <div style={{fontSize: '10px', marginTop: '4px', color: '#666', fontStyle: 'italic'}}>
-                              Strategy: <b>
-                                {typeof details.params === 'object' 
-                                   ? JSON.stringify(details.params) 
-                                   : (details.params || 'mean')}
-                              </b>
-                          </div>
-                        )}
-                      </td>
-                      <td style={{ padding: '15px', color: '#666', lineHeight: '1.5', fontStyle: 'italic' }}>
-                        {details.reason || "No specific reason provided."}
-                      </td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
+        
+        {/* HEADER */}
+        <div style={{ padding: '16px 24px', borderBottom: '1px solid #dfe1e6', display: 'flex', justifyContent: 'space-between', alignItems: 'center', backgroundColor: '#f4f5f7' }}>
+          <div>
+            <h2 style={{ margin: 0, color: '#172b4d', fontSize: '18px', display: 'flex', alignItems: 'center', gap: '10px' }}>
+              <span style={{ fontSize: '22px' }}>🤖</span> AI Clinical Strategy Engine
+            </h2>
+            <div style={{ fontSize: '12px', color: '#6b778c', marginTop: '4px' }}>
+              {viewStep === 'report' ? 'Step 1: Clinical Safety & Feasibility Assessment' : 'Step 2: Technical Configuration & Strategy'}
             </div>
           </div>
-
-          {/* Right Column: Explanation & Action */}
-          <div style={{ flex: 1, display: 'flex', flexDirection: 'column' }}>
-            <h4 style={{ marginTop: 0, marginBottom: '10px', color: '#555' }}>Clinical Rationale (Editable)</h4>
-            <textarea
-              value={editedExplanation}
-              onChange={handleExplanationChange}
-              disabled={isExecuting}
-              placeholder="AI explanation will appear here..."
-              style={{
-                flex: 1, width: '100%', boxSizing: 'border-box', resize: 'none',
-                fontSize: '14px', lineHeight: '1.6', color: '#333', padding: '15px',
-                backgroundColor: '#fff', border: '1px solid #e0c8e6', borderRadius: '8px',
-                fontFamily: 'inherit', marginBottom: '20px'
-              }}
-            />
-            
-            <button
-              onClick={handleExecute}
-              disabled={isExecuting}
-              style={{
-                width: '100%', padding: '15px', border: 'none', borderRadius: '8px',
-                backgroundColor: isExecuting ? '#6c757d' : '#28a745',
-                color: 'white', fontWeight: 'bold', fontSize: '16px',
-                cursor: isExecuting ? 'not-allowed' : 'pointer',
-                boxShadow: '0 4px 6px rgba(0,0,0,0.2)', transition: 'background 0.2s',
-                display: 'flex', justifyContent: 'center', alignItems: 'center', gap: '10px'
-              }}
-              onMouseOver={(e) => !isExecuting && (e.target.style.backgroundColor = '#218838')}
-              onMouseOut={(e) => !isExecuting && (e.target.style.backgroundColor = '#28a745')}
-            >
-              {isExecuting ? (
-                  <>
-                    <span style={{ 
-                        width: '16px', height: '16px', 
-                        border: '3px solid #fff', borderTopColor: 'transparent', borderRadius: '50%',
-                        display: 'inline-block', animation: 'spin 1s linear infinite'
-                    }} />
-                    Processing...
-                    <style>{`@keyframes spin { to { transform: rotate(360deg); } }`}</style>
-                  </>
-              ) : (
-                  isEditing ? 'Approve & Execute Updated Plan' : 'Execute Plan'
-              )}
-            </button>
-          </div>
-
+          <button onClick={onClose} style={{ border: 'none', background: 'transparent', fontSize: '24px', cursor: 'pointer', color: '#42526e' }}>×</button>
         </div>
+
+        {/* CONTENT AREA */}
+        <div style={{ flex: 1, overflow: 'hidden', display: 'flex', backgroundColor: '#fafbfc', position: 'relative' }}>
+            
+            {/* >>> VIEW 1: EXECUTIVE SUMMARY (Read Only) <<< */}
+            {viewStep === 'report' && (
+                <div style={{ width: '100%', padding: '30px', overflowY: 'auto' }}>
+                    <div style={{ maxWidth: '800px', margin: '0 auto', background: 'white', padding: '40px', borderRadius: '8px', boxShadow: '0 1px 3px rgba(0,0,0,0.1)', border: '1px solid #dfe1e6' }}>
+                        <h3 style={{marginTop:0, color:'#0052cc', borderBottom: '2px solid #0052cc', paddingBottom: '10px', display: 'inline-block'}}>
+                            Clinical Executive Summary
+                        </h3>
+                        <div style={{ marginTop: '20px' }}>
+                            <MarkdownRenderer text={summaryText} />
+                        </div>
+                    </div>
+                </div>
+            )}
+
+            {/* >>> VIEW 2: SPLIT CONFIGURATION (Table + Editor) <<< */}
+            {viewStep === 'plan' && (
+                <>
+                    {/* LEFT: TABLE */}
+                    <div style={{ flex: 3, display: 'flex', flexDirection: 'column', borderRight: '1px solid #dfe1e6', backgroundColor: '#fff' }}>
+                        <div style={{ padding: '12px 20px', borderBottom: '1px solid #eee', background: '#f9f9f9' }}>
+                            <h4 style={{ margin:0, color:'#42526e', fontSize:'13px', textTransform: 'uppercase', letterSpacing: '0.5px' }}>Column Actions Map</h4>
+                        </div>
+                        <div style={{ flex: 1, overflowY: 'auto' }}>
+                            <table style={{ width: '100%', borderCollapse: 'collapse', fontSize:'13px' }}>
+                                <thead style={{ position: 'sticky', top: 0, background: '#f4f5f7', zIndex: 5, boxShadow: '0 1px 2px rgba(0,0,0,0.05)' }}>
+                                    <tr>
+                                        <th style={{ padding:'12px 15px', textAlign:'left', color:'#5e6c84', width: '25%' }}>Column</th>
+                                        <th style={{ padding:'12px 15px', textAlign:'left', color:'#5e6c84', width: '25%' }}>Action</th>
+                                        <th style={{ padding:'12px 15px', textAlign:'left', color:'#5e6c84' }}>Clinical Logic</th>
+                                    </tr>
+                                </thead>
+                                <tbody>
+                                {Object.entries(plan).map(([col, details], idx) => {
+                                    const styles = getActionColor(details.action);
+                                    return (
+                                        <tr key={col} style={{ borderBottom: '1px solid #eee', backgroundColor: idx % 2 === 0 ? '#fff' : '#fafbfc' }}>
+                                            <td style={{ padding:'12px 15px', fontWeight:'500', color: '#172b4d' }}>{col}</td>
+                                            <td style={{ padding:'12px 15px' }}>
+                                                  <div style={{ position: 'relative', width: '100%' }}>
+                                                    <select 
+                                                        value={details.action} 
+                                                        onChange={(e) => handleActionChange(col, e.target.value)} 
+                                                        disabled={isExecuting}
+                                                        style={{ 
+                                                            appearance: 'none', width:'100%', padding:'6px 12px', 
+                                                            borderRadius:'100px', border:`1px solid ${styles.border}`, 
+                                                            backgroundColor:styles.bg, color:styles.text, 
+                                                            fontSize:'12px', fontWeight:'600', cursor: 'pointer', textAlign: 'center'
+                                                        }}
+                                                    >
+                                                        <option value="drop">Drop</option>
+                                                        <option value="impute">Impute (Mean)</option>
+                                                        <option value="scale">Scale (Std)</option>
+                                                        <option value="one_hot_encode">One-Hot</option>
+                                                        <option value="label_encode">Label</option>
+                                                    </select>
+                                                  </div>
+                                            </td>
+                                            <td style={{ padding:'12px 15px', color:'#6b778c', lineHeight: '1.4' }}>{details.reason}</td>
+                                        </tr>
+                                    );
+                                })}
+                                </tbody>
+                            </table>
+                        </div>
+                    </div>
+
+                    {/* RIGHT: EDITOR */}
+                    <div style={{ flex: 2, display: 'flex', flexDirection: 'column', backgroundColor: '#f4f5f7', position: 'relative' }}>
+                        <div style={{ padding: '12px 20px', borderBottom: '1px solid #dfe1e6', display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                            <h4 style={{ margin:0, color:'#42526e', fontSize:'13px', textTransform: 'uppercase' }}>Detailed Technical Strategy</h4>
+                            <span style={{ fontSize:'11px', background:'#e3f2fd', color:'#0052cc', padding:'2px 8px', borderRadius:'10px', fontWeight: 'bold' }}>Editable</span>
+                        </div>
+                        
+                        <div style={{ flex: 1, padding: '15px', display: 'flex', flexDirection: 'column' }}>
+                            <div style={{ flex: 1, display: 'flex', flexDirection: 'column', background: '#fff', border: '1px solid #dfe1e6', borderRadius: '8px', overflow: 'hidden' }}>
+                                <textarea
+                                    value={editorText}
+                                    onChange={(e) => setEditorText(e.target.value)}
+                                    placeholder="The detailed technical strategy will appear here..."
+                                    style={{ 
+                                        flex: 1, width: '100%', border: 'none', padding: '15px', 
+                                        resize: 'none', fontSize: '13px', lineHeight: '1.6', 
+                                        fontFamily: '"SFMono-Regular", Consolas, "Liberation Mono", Menlo, Courier, monospace', 
+                                        outline: 'none', color: '#172b4d' 
+                                    }}
+                                />
+                                <div style={{ padding: '8px 12px', background: '#fafbfc', borderTop: '1px solid #eee', fontSize: '11px', color: '#6b778c' }}>
+                                    💡 Tip: You can edit this text. Click "Sync Table" to update the JSON map based on your edits.
+                                </div>
+                            </div>
+
+                            <div style={{ marginTop: '15px', display: 'flex', gap: '10px', flexDirection: 'column' }}>
+                                <button 
+                                    onClick={handleSyncTable} 
+                                    disabled={isSyncing} 
+                                    style={{ 
+                                        padding: '10px', borderRadius: '6px', border: '1px solid #b3d4ff', 
+                                        backgroundColor: '#deebff', color: '#0052cc', fontWeight: '600', 
+                                        cursor: isSyncing ? 'wait' : 'pointer', display: 'flex', justifyContent: 'center', alignItems: 'center', gap: '8px'
+                                    }}
+                                >
+                                    {isSyncing ? 'Processing Updates...' : '⚡ Sync Table with Changes'}
+                                </button>
+                                
+                                <button 
+                                    onClick={handleExecute} 
+                                    disabled={isExecuting} 
+                                    style={{ 
+                                        padding: '12px', borderRadius: '6px', border: 'none', 
+                                        background: 'linear-gradient(135deg, #0052cc 0%, #0747a6 100%)', 
+                                        color: 'white', fontWeight: '600', cursor: isExecuting ? 'not-allowed' : 'pointer',
+                                        boxShadow: '0 4px 6px rgba(0,82,204,0.2)',
+                                        display: 'flex', justifyContent: 'center', alignItems: 'center', gap: '8px'
+                                    }}
+                                >
+                                    {isExecuting ? 'Building Pipeline...' : '🚀 Confirm & Execute Plan'}
+                                </button>
+                            </div>
+                        </div>
+                    </div>
+                </>
+            )}
+        </div>
+
+        {/* FOOTER */}
+        {viewStep === 'report' && (
+            <div style={{ padding: '16px 24px', borderTop: '1px solid #dfe1e6', display: 'flex', justifyContent: 'flex-end', gap: '12px', backgroundColor: '#f4f5f7' }}>
+                <button onClick={onClose} style={{ padding: '10px 20px', borderRadius: '6px', border: '1px solid #dfe1e6', background: '#fff', color: '#42526e', cursor: 'pointer', fontWeight: '500' }}>Cancel</button>
+                <button 
+                    onClick={() => setViewStep('plan')} 
+                    style={{ 
+                        padding: '10px 24px', backgroundColor: '#0052cc', color: '#fff', 
+                        border:'none', borderRadius:'6px', cursor:'pointer', fontWeight: '600',
+                        boxShadow: '0 2px 4px rgba(0,0,0,0.1)'
+                    }}
+                >
+                    Proceed to Configuration →
+                </button>
+            </div>
+        )}
       </div>
     </div>
   );
