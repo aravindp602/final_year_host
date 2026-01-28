@@ -8,7 +8,7 @@ const { upload, uploadDir } = require("../middleware/upload");
 
 dotenv.config();
 
-// 1. Define Root Dir (Go up one level from 'routes' to 'backend')
+// 1. Define Root Dir
 const rootDir = path.join(__dirname, "..");
 
 // 2. Portable Python Resolver
@@ -27,52 +27,125 @@ function resolvePythonExecutable() {
 const pythonExecutable = resolvePythonExecutable();
 console.log(`🐍 [DomainProcess] Using Python: ${pythonExecutable}`);
 
-// --- Helper: Run Python Script (Standardized Parser) ---
+// --- Helper: Load JSON Safe ---
+const loadJsonSafe = (filePath) => {
+  try {
+    const fullPath = path.join(rootDir, filePath);
+    const raw = fs.readFileSync(fullPath, "utf8");
+    return JSON.parse(raw);
+  } catch (err) {
+    return [];
+  }
+};
+
+// --- Helper: Generate Graph Data based on Plan ---
+const generateGraphData = (plan) => {
+    const nodes = [];
+    const edges = [];
+    let xPos = 50;
+    let lastNodeId = "dataset-node";
+
+    // 1. Dataset Node
+    nodes.push({ id: "dataset-node", type: "datasetNode", position: { x: xPos, y: 100 }, data: { label: "Dataset" } });
+    xPos += 250;
+
+    // 2. Extract Actions from Plan
+    const actions = new Set();
+    if (plan && typeof plan === 'object') {
+        Object.values(plan).forEach(details => {
+            if (details.action) actions.add(details.action);
+        });
+    }
+
+    // 3. Map Actions to Nodes
+    const actionMapping = [
+        { key: 'drop', label: 'Drop Identifiers', id: 'dp_drop' },
+        { key: 'one_hot_encode', label: 'One-Hot Encoding', id: 'dp_ohe' },
+        { key: 'label_encode', label: 'Label Encoding', id: 'dp_le' },
+        { key: 'scale', label: 'Standard Scaling', id: 'dp_scale' },
+        { key: 'impute', label: 'Missing Val Imputation', id: 'dp_impute' }
+    ];
+
+    actionMapping.forEach(step => {
+        if (actions.has(step.key)) {
+            const newNodeId = `${step.id}_${Date.now()}`;
+            nodes.push({
+                id: newNodeId, type: "preprocessingNode", position: { x: xPos, y: 100 },
+                data: { label: step.label, baseId: step.id, color: "#b730cfff" } // Purple for Domain
+            });
+            edges.push({ id: `e-${lastNodeId}-${newNodeId}`, source: lastNodeId, target: newNodeId, animated: true });
+            lastNodeId = newNodeId;
+            xPos += 250;
+        }
+    });
+
+    // 4. AutoML Model Node
+    const defaultModelId = "m1"; 
+    const modelNodeId = `m_${defaultModelId}_${Date.now()}`;
+    nodes.push({ id: modelNodeId, type: "modelNode", position: { x: xPos, y: 100 }, data: { label: "AutoML Search", baseId: defaultModelId } });
+    edges.push({ id: `e-${lastNodeId}-${modelNodeId}`, source: lastNodeId, target: modelNodeId, animated: true });
+    lastNodeId = modelNodeId;
+    xPos += 250;
+
+    // 5. Output Node
+    const defaultOutputId = "o1";
+    const outNodeId = `o_${defaultOutputId}_${Date.now()}`;
+    nodes.push({ id: outNodeId, type: "outputNode", position: { x: xPos, y: 85 }, data: { label: "Scatter Plot", baseId: defaultOutputId } });
+    edges.push({ id: `e-${lastNodeId}-${outNodeId}`, source: lastNodeId, target: outNodeId, animated: true });
+
+    return { nodes, edges };
+};
+
+// --- Helper: Run Python Script (Smart Logging) ---
 const runPythonScript = (scriptPath, args) => {
   return new Promise((resolve, reject) => {
-    // ✅ PASS CWD OPTION CORRECTLY
     const python = spawn(pythonExecutable, ["-u", scriptPath, ...args], {
         cwd: rootDir 
     });
 
     let output = "";
     let errorOutput = "";
+    let isPrintingJson = false;
 
     python.stdout.on("data", (data) => { 
-        output += data.toString();
-        // Optional: Real-time logging of non-JSON content can go here
+        const str = data.toString();
+        output += str;
+        
+        // --- SMART LOGGING LOGIC ---
+        // Handles both __JSON_START__ (Normal) and __JSON_RESULT_START__ (Generator)
+        
+        // 1. Detect Start of JSON
+        if (str.includes("__JSON_START__") || str.includes("__JSON_RESULT_START__")) {
+            isPrintingJson = true;
+            // Print content BEFORE the tag, then stop
+            const parts = str.split(/__JSON_START__|__JSON_RESULT_START__/);
+            if (parts[0] && parts[0].trim()) process.stdout.write(parts[0]);
+        } 
+        // 2. Detect End of JSON
+        else if (str.includes("__JSON_END__") || str.includes("__JSON_RESULT_END__")) {
+            isPrintingJson = false;
+            // Print content AFTER the tag
+            const parts = str.split(/__JSON_END__|__JSON_RESULT_END__/);
+            if (parts[1] && parts[1].trim()) process.stdout.write(parts[1]);
+        } 
+        // 3. Normal Logs (Only print if NOT inside JSON block)
+        else if (!isPrintingJson) {
+            process.stdout.write(str);
+        }
     });
 
     python.stderr.on("data", (data) => { 
-        console.error(`[Py Log]: ${data.toString()}`);
-        errorOutput += data.toString(); 
+        const str = data.toString();
+        errorOutput += str;
+        process.stdout.write(`[Py Log]: ${str}`); // Force stderr to terminal
     });
 
     python.on("close", (code) => {
       if (code === 0) {
-        try {
-            // New Robust Parsing: Look for the specific result block
-            const match = output.match(/__JSON_RESULT_START__([\s\S]*?)__JSON_RESULT_END__/);
-            
-            if (!match) {
-                // Fallback for older scripts or different output formats (like execution)
-                // If no block found, just resolve valid output if it exists or raw string
-                if (output.includes("output")) return resolve(output); 
-                throw new Error("Could not find __JSON_RESULT_START__ block in Python output.");
-            }
-
-            const jsonResult = JSON.parse(match[1]);
-            resolve(jsonResult);
-
-        } catch (e) {
-          console.error("❌ JSON Parse Error:", e);
-          // Special handling: If it's the execution script, it might not use the block format yet
-          // For now, reject to be safe, or inspect 'output' manually
-          reject(new Error(`Failed to parse Python result: ${e.message}\nRaw Output: ${output}`));
-        }
+        resolve(output);
       } else {
         const shortError = errorOutput.split('\n').filter(l => l.trim() !== '').slice(-3).join('\n');
-        console.error(`[Py-Err] ${scriptPath} exited with code ${code}.`);
+        console.error(`[Py-Err] ${scriptPath} exited with code ${code}. Details:\n${shortError}`);
         reject(new Error(errorOutput || `Script exited with code ${code}`));
       }
     });
@@ -89,12 +162,17 @@ router.post("/generate-medical-plan", upload.single("dataset"), async (req, res)
     const filePath = path.join(uploadDir, req.file.filename);
   
     try {
-        const result = await runPythonScript(
+        const output = await runPythonScript(
             "preprocessing/Domain_based_preprocessing/medical_plan_generator.py",
             [filePath]
         );
         
-        // result should contain: { plan, summary, strategy }
+        // Extract JSON using the specific generator delimiter
+        const match = output.match(/__JSON_RESULT_START__([\s\S]*?)__JSON_RESULT_END__/);
+        if (!match) throw new Error("Could not find JSON result in Python output");
+        
+        const result = JSON.parse(match[1]);
+        
         console.log("✅ [Medical Plan] Successfully generated.");
         res.json(result);
 
@@ -117,12 +195,16 @@ router.post("/regenerate-plan", upload.single("dataset"), async (req, res) => {
     console.log("🔄 [Medical Plan] Regenerating plan based on user edits...");
 
     try {
-        const result = await runPythonScript(
+        const output = await runPythonScript(
             "preprocessing/Domain_based_preprocessing/medical_plan_generator.py",
             [filePath, "--regenerate", reportText]
         );
 
-        // result should contain: { plan }
+        const match = output.match(/__JSON_RESULT_START__([\s\S]*?)__JSON_RESULT_END__/);
+        if (!match) throw new Error("Could not find JSON result in Python output");
+
+        const result = JSON.parse(match[1]);
+        
         console.log("✅ [Medical Plan] Regenerated successfully.");
         res.json(result);
 
@@ -143,6 +225,7 @@ router.post("/execute-approved-plan", upload.single("dataset"), async (req, res)
     const datasetPath = req.file.path;
     const branchName = "main_branch";
     
+    // Setup Directories
     const logDirName = `${branchName}_logging`;
     const logDirPath = path.join(rootDir, "preprocessing", "Domain_based_preprocessing", logDirName);
     const outputCsvName = `${branchName}_processed.csv`;
@@ -153,132 +236,69 @@ router.post("/execute-approved-plan", upload.single("dataset"), async (req, res)
     console.log(`\n🏥 Executing Medical Plan on ${branchName}...`);
   
     try {
-      // 1. Run Preprocessing Logic (Using the old direct spawn for the executor since it prints logs differently)
-      // Note: The Executor script likely hasn't been updated to the new JSON block format yet, 
-      // so we use a simple spawn here or ensure runPythonScript handles unstructured output fallback.
-      // For safety, let's use the manual spawn for this specific legacy script logic:
-      
-      const executorProcess = spawn(pythonExecutable, [
+      // 1. Run Preprocessing Executor
+      await runPythonScript(
         "preprocessing/Domain_based_preprocessing/medical_plan_executor.py",
-        datasetPath, JSON.stringify(plan), preprocessedPath, logDirPath
-      ], { cwd: rootDir });
+        [datasetPath, JSON.stringify(plan), preprocessedPath, logDirPath]
+      );
+      console.log(`   ✅ Preprocessing Complete.`);
 
-      executorProcess.stdout.on("data", (d) => process.stdout.write(d.toString())); // Pipe logs
-
-      await new Promise((resolve, reject) => {
-          executorProcess.on("close", (code) => {
-              if (code === 0) resolve();
-              else reject(new Error(`Executor failed with code ${code}`));
-          });
-      });
-
-      // 2. Build Graph Visualization
-      const actions = new Set();
-      Object.values(plan).forEach(details => actions.add(details.action));
-  
-      const nodes = [];
-      const edges = [];
-      let xPos = 50;
-      let lastNodeId = "dataset-node";
-  
-      nodes.push({ id: "dataset-node", type: "datasetNode", position: { x: xPos, y: 100 }, data: { label: "Dataset" } });
-      xPos += 250;
-  
-      const actionMapping = [
-          { key: 'drop', label: 'Drop Identifiers', id: 'dp_drop' },
-          { key: 'one_hot_encode', label: 'One-Hot Encoding', id: 'dp_ohe' },
-          { key: 'label_encode', label: 'Label Encoding', id: 'dp_le' },
-          { key: 'scale', label: 'Standard Scaling', id: 'dp_scale' },
-          { key: 'impute', label: 'Missing Val Imputation', id: 'dp_impute' }
-      ];
-  
-      actionMapping.forEach(step => {
-          if (actions.has(step.key)) {
-              const newNodeId = `${step.id}_${Date.now()}`;
-              nodes.push({
-                  id: newNodeId, type: "preprocessingNode", position: { x: xPos, y: 100 },
-                  data: { label: step.label, baseId: step.id, color: "#b730cfff" }
-              });
-              edges.push({ id: `e-${lastNodeId}-${newNodeId}`, source: lastNodeId, target: newNodeId, animated: true });
-              lastNodeId = newNodeId;
-              xPos += 250;
-          }
-      });
-  
-      // Default AutoML Node
-      const defaultModelId = "m1"; 
-      const defaultOutputId = "o1"; 
-      const mList = [defaultModelId];
-      const oList = [defaultOutputId];
-
-      const modelNodeId = `m_${defaultModelId}_${Date.now()}`;
-      nodes.push({ id: modelNodeId, type: "modelNode", position: { x: xPos, y: 100 }, data: { label: "AutoML Search", baseId: defaultModelId } });
-      edges.push({ id: `e-${lastNodeId}-${modelNodeId}`, source: lastNodeId, target: modelNodeId, animated: true });
-      lastNodeId = modelNodeId;
-      xPos += 250;
-  
-      const outNodeId = `o_${defaultOutputId}_${Date.now()}`;
-      nodes.push({ id: outNodeId, type: "outputNode", position: { x: xPos, y: 85 }, data: { label: "Scatter Plot", baseId: defaultOutputId } });
-      edges.push({ id: `e-${lastNodeId}-${outNodeId}`, source: lastNodeId, target: outNodeId, animated: true });
-
-      // 3. Model Training (Reusing existing handler)
+      // 2. Model Training (AutoML)
+      // Note: We force 'm1' (or 'm0' if your config uses that for AutoML) 
+      const mList = ["m1"]; 
       let trainingResults = [];
       let trainedModelPath = null;
-      if (mList.length > 0) {
-          const allModels = [{ id: "m0", name: "AutoML", algo: "automl" }]; // Simplified for this context
-          // Note: In real app, load model_names.json
 
-          // We use the runPythonScript helper here BUT the model handler output format 
-          // might be different (using __JSON_START__). 
-          // Since runPythonScript now looks for __JSON_RESULT_START__, we need to handle that difference 
-          // or update model_handler.py. 
-          // For safety in this specific snippet, I will rely on the standard `runPythonScript` logic I wrote above
-          // which has a fallback if the new block isn't found.
-          
-          // However, your previous model_handler.py uses __JSON_START__. 
-          // To keep it simple, I'll just spawn it manually like before to avoid breaking changes.
-          
-          // ... (Existing Model Training Spawn Logic) ...
-          // For brevity in this file response, I assume you have the existing logic or use the simple spawn below:
-           const modelProcess = spawn(pythonExecutable, [
+      try {
+          const allModels = loadJsonSafe("model_selectionAndTraining/model_names.json");
+          const selectedModels = allModels.filter(m => mList.includes(m.id));
+          const payload = selectedModels.length > 0 ? selectedModels : [{ id: "m0", name: "AutoML", algo: "automl" }];
+
+          const output = await runPythonScript(
             "model_selectionAndTraining/model_handler.py",
-            preprocessedPath, JSON.stringify(allModels)
-           ], { cwd: rootDir });
-           
-           let mOut = "";
-           modelProcess.stdout.on('data', d => mOut += d.toString());
-           await new Promise(r => modelProcess.on('close', r));
-           
-           const jsonStart = mOut.indexOf("__JSON_START__");
-           const jsonEnd = mOut.indexOf("__JSON_END__");
-           if (jsonStart !== -1 && jsonEnd !== -1) {
-               trainingResults = JSON.parse(mOut.substring(jsonStart + 14, jsonEnd));
-               if(trainingResults.length > 0) trainedModelPath = trainingResults[0].path;
-           }
-      }
-  
-      // 4. Output Generation (Manual Spawn for safety)
-      let visualizationData = {};
-      if (oList.length > 0 && trainedModelPath) {
-          const outProcess = spawn(pythonExecutable, [
-             "output_section/output_handler.py",
-             preprocessedPath, trainedModelPath, JSON.stringify(oList)
-          ], { cwd: rootDir });
-          
-          let oOut = "";
-          outProcess.stdout.on('data', d => oOut += d.toString());
-          await new Promise(r => outProcess.on('close', r));
+            [preprocessedPath, JSON.stringify(payload)]
+          );
 
-          const jsonStart = oOut.indexOf("__JSON_START__");
-          const jsonEnd = oOut.indexOf("__JSON_END__");
+          const jsonStart = output.indexOf("__JSON_START__");
+          const jsonEnd = output.indexOf("__JSON_END__");
+          
           if (jsonStart !== -1 && jsonEnd !== -1) {
-              visualizationData = JSON.parse(oOut.substring(jsonStart + 14, jsonEnd));
+              const jsonStr = output.substring(jsonStart + 14, jsonEnd);
+              try {
+                  trainingResults = JSON.parse(jsonStr);
+                  if (trainingResults.length > 0) trainedModelPath = trainingResults[0].path;
+              } catch (e) { console.error("   ❌ JSON Parse Error:", e.message); }
           }
+          console.log(`   ✅ Model Training Complete.`);
+      } catch (err) {
+          throw new Error(`Model Training Failed: ${err.message}`);
       }
   
+      // 3. Output Generation
+      const oList = ["o1"];
+      let visualizationData = {};
+      if (trainedModelPath) {
+        try {
+          const output = await runPythonScript(
+            "output_section/output_handler.py",
+            [preprocessedPath, trainedModelPath, JSON.stringify(oList)]
+          );
+          const jsonStart = output.indexOf("__JSON_START__");
+          const jsonEnd = output.indexOf("__JSON_END__");
+          if (jsonStart !== -1 && jsonEnd !== -1) {
+              const jsonStr = output.substring(jsonStart + 14, jsonEnd);
+              visualizationData = JSON.parse(jsonStr);
+          }
+          console.log(`   ✅ Output Generation Complete.`);
+        } catch (err) { console.error(`[Output Error] ${err.message}`); }
+      }
+  
+      // 4. Generate Graph Data
+      const graphData = generateGraphData(plan);
+
       res.json({
           message: "Medical Plan Executed Successfully",
-          graph: { nodes, edges },
+          graph: graphData,
           outputs: visualizationData,
           trainingResults: trainingResults,
           isCustom: false

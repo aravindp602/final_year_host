@@ -20,10 +20,7 @@ if not HF_TOKEN:
     raise ValueError("❌ HF_TOKEN not found in .env")
 
 # --- MODEL CONFIGURATION ---
-# 1. Report/Summary Model (Lighter, Creative)
 HF_MODEL_SUMMARY = "meta-llama/Llama-3.2-3B-Instruct" 
-
-# 2. Logic/JSON Model (Strict, Smarter, Clinical Logic)
 HF_MODEL_LOGIC = "meta-llama/Llama-3.1-8B-Instruct:novita"
 
 client = InferenceClient(api_key=HF_TOKEN)
@@ -34,42 +31,41 @@ client = InferenceClient(api_key=HF_TOKEN)
 
 def auto_repair_json(text: str) -> str:
     if not text: return text
-    # Fix unclosed braces
     open_braces = text.count("{")
     close_braces = text.count("}")
     if close_braces < open_braces: text += "}" * (open_braces - close_braces)
-    # Fix trailing commas
     text = re.sub(r',\s*}', '}', text)
     return text
 
 def extract_json_block(text: str) -> str:
-    """
-    Robust extraction that stops at the matching closing brace 
-    to prevent 'Extra data' errors from multiple JSON objects.
-    """
     if not text: return ""
     text = re.sub(r'```json\s*', '', text)
     text = re.sub(r'```\s*', '', text)
-    
     start = text.find('{')
     if start == -1: return ""
-    
-    # Smart Brace Counting
     count = 0
     for i, char in enumerate(text[start:]):
-        if char == '{':
-            count += 1
-        elif char == '}':
-            count -= 1
-            if count == 0:
-                return text[start : start + i + 1]
+        if char == '{': count += 1
+        elif char == '}': count -= 1
+        if count == 0: return text[start : start + i + 1]
     return text[start:]
+
+def clean_strategy_text(text: str) -> str:
+    """
+    Strips Markdown bolding/italics to make the editor text cleaner.
+    """
+    if not text: return ""
+    # Remove **bold**
+    text = re.sub(r'\*\*(.*?)\*\*', r'\1', text)
+    # Remove *italics* (but keep bullet points like * Item)
+    text = re.sub(r'([^*])\*([^*]+)\*', r'\1\2', text)
+    # Ensure standard bullet points
+    text = text.replace("* ", "- ")
+    return text
 
 def ask_hf_llm(prompt: str, model: str, temperature: float = 0.1) -> str:
     try:
-        # Visual log without progress dots
         print(f"   ⏳ Requesting {model}...", file=sys.stderr, flush=True)
-        
         stream = client.chat.completions.create(
             model=model,
             messages=[{"role": "user", "content": prompt}],
@@ -104,34 +100,26 @@ class MedicalPlanGenerator:
 
     def get_dataset_profile(self, df: pd.DataFrame) -> str:
         col_stats = []
-        
-        # AGGRESSIVE CLEANING: Replace diverse null types with np.nan
         df_clean = df.replace([r'^\s*$', r'^\?$', r'^NA$', r'^nan$', r'^null$', r'^None$'], np.nan, regex=True)
 
         for col in df_clean.columns:
             dtype = str(df_clean[col].dtype)
-            
-            # Count Missing
             missing_count = int(df_clean[col].isnull().sum())
             total_rows = len(df_clean)
             missing_pct = (missing_count / total_rows) * 100
-            
             unique = int(df_clean[col].nunique())
             
-            # Get samples
             if unique < 15:
                 samples = list(df_clean[col].dropna().unique())
             else:
                 samples = list(df_clean[col].dropna().unique()[:5])
 
-            # CRITICAL FLAG for LLM
             missing_flag = ""
             if missing_count > 0:
                 missing_flag = f"[🚨 CLINICAL ALERT: {missing_count} MISSING VALUES ({missing_pct:.1f}%)]"
             else:
-                missing_flag = "[Data Complete]"
+                missing_flag = "[Complete]"
 
-            # Detect Potential Ordinality in Strings
             ordinal_hint = ""
             if dtype == 'object' and any(x in str(samples).lower() for x in ['low', 'medium', 'high', 'stage', 'grade']):
                 ordinal_hint = "(Potential Ordinal/Ranked Data)"
@@ -139,7 +127,7 @@ class MedicalPlanGenerator:
             stat_str = (
                 f"VAR: '{col}'\n"
                 f"   - Type: {dtype} {ordinal_hint}\n"
-                f"   - {missing_flag}\n"
+                f"   - Status: {missing_flag}\n"
                 f"   - Distinct Count: {unique}\n"
                 f"   - Samples: {samples}\n"
             )
@@ -157,8 +145,8 @@ class MedicalPlanGenerator:
 
         prompt = f"""
 SYSTEM ROLE:
-You are the **Chief Medical Information Officer (CMIO)** at a top research hospital.
-You are evaluating a dataset for a Clinical AI Model.
+You are the **Chief Medical Information Officer (CMIO)**.
+Evaluate this dataset for a Clinical AI Model.
 
 ==================================================
 DATASET AUTOPSY:
@@ -170,17 +158,17 @@ TARGET VARIABLE: '{self.target_col}'
 INSTRUCTIONS:
 Write a **Clinical Data Assessment** (Markdown).
 
-1. **Domain Identification**: Based on the column names (e.g., 'TNM', 'Creatinine', 'ICU_Stay'), identify the medical specialty (Oncology, Cardiology, Epidemiology, etc.).
-2. **Clinical Feasibility**: Is the target variable '{self.target_col}' a valid clinical outcome (e.g., Diagnosis, Mortality, Severity)?
-3. **Data Hygiene Alert**: Summarize the "🚨 CLINICAL ALERT" tags from the profile. Are the missing values in critical columns (like Vital Signs) or administrative columns?
-4. **Privacy Check**: Note if any columns look like PII (Names, IDs) that must be dropped.
+1. **Domain Identification**: Identify the medical specialty.
+2. **Clinical Feasibility**: Is the target variable '{self.target_col}' a valid outcome?
+3. **Data Hygiene Alert**: Summarize "🚨 CLINICAL ALERT" tags.
+4. **Privacy Check**: Note PII.
 
 Tone: Professional, Medically Accurate, Concise.
 """
         return ask_hf_llm(prompt, HF_MODEL_SUMMARY, temperature=0.2)
 
     # ============================================================
-    # PHASE 2: DETAILED STRATEGY (The Advanced Clinical Logic)
+    # PHASE 2: DETAILED STRATEGY (CLEAN TEXT FOR EDITOR)
     # ============================================================
 
     def generate_detailed_strategy(self, df: pd.DataFrame, executive_summary: str) -> str:
@@ -189,62 +177,56 @@ Tone: Professional, Medically Accurate, Concise.
 
         prompt = f"""
 SYSTEM ROLE:
-You are a **Lead Clinical Data Scientist** specializing in Electronic Health Records (EHR).
+You are a **Lead Clinical Data Scientist**.
 Develop a **Domain-Specific Preprocessing Strategy**.
 
 ==================================================
-EXECUTIVE CONTEXT:
-{executive_summary}
-
 DATA PROFILE:
 {profile}
 
 ==================================================
 TASK:
-Analyze EACH variable and assign a processing strategy based on its **Medical Archetype**.
+Analyze EACH variable. 
 
-### 1. GUIDELINES FOR LOGIC:
+**STRICT FORMATTING RULES FOR EDITOR:**
+1. Do NOT use markdown bolding (**) or italics (*) inside the text.
+2. Use simple bullet points (-) and indentation.
+3. Keep it clean and readable as plain text.
 
-* **VITAL SIGNS / LABS (Continuous Numeric)**:
-    * *Examples*: Blood Pressure, Glucose, Age, BMI, Cholesterol.
-    * *Standard Action*: **Standard Scaling** (Z-score normalization) to treat outliers relative to population norms.
-    * *Missing Logic*: If missing, **Impute with Mean**. Vitals typically follow a normal distribution.
+### LOGIC GUIDELINES:
 
-* **RISK FACTORS / HISTORY (Nominal Categorical)**:
-    * *Examples*: Smoking Status, Gender, Race, History of Diabetes.
-    * *Standard Action*: **One-Hot Encoding**.
-    * *Missing Logic*: **Impute with Mode** (Most frequent) or create 'Unknown' category.
+* **IF MISSING DATA EXISTS**:
+    * Action: Impute (Mean for numeric, Mode for categorical).
+    * Reason: Explain why imputing is better than dropping.
 
-* **DISEASE GRADING (Ordinal Categorical)**:
-    * *Examples*: Tumor Stages (I, II, III), Severity (Low, Medium, High).
-    * *Standard Action*: **Label Encoding**. 
-    * *Critical Rule*: **DO NOT** One-Hot Encode these. You must preserve the rank order (Stage IV > Stage I).
+* **IF NO MISSING DATA**:
+    * **VITAL SIGNS (Continuous)**: Standard Scaling.
+    * **RISK FACTORS (Nominal)**: One-Hot Encoding.
+    * **DISEASE GRADING (Ordinal)**: Label Encoding.
+    * **IDS**: Drop.
 
-* **ADMINISTRATIVE / IDS**:
-    * *Examples*: PatientID, Date of Admission.
-    * *Action*: **Drop**.
+### REQUIRED OUTPUT FORMAT:
 
-### 2. REQUIRED OUTPUT FORMAT (Markdown):
+Variable Analysis:
 
-**Variable Analysis:**
+[Column Name]
+  - Clinical Relevance: [Why is this important?]
+  - Missing Status: [Has Missing / Complete]
+  - Action: [Impute / Scale / One-Hot / Label / Drop]
+  - Reasoning: [Explanation]
 
-* **[Column Name]**
-    * *Clinical Relevance*: [Why is this medically important?]
-    * *DataType*: [Nominal / Ordinal / Continuous]
-    * *Missing Status*: [Has Missing / Complete]
-    * *Primary Action*: [**Impute** / Scale / One-Hot / Label / Drop]
-    * *Reasoning*: [Detailed explanation. E.g., "Imputing BMI with mean to preserve distribution," or "Label encoding Stage to maintain severity rank."]
-
-**Summary of Exclusions:**
-* List columns to be dropped and why.
+Summary of Exclusions:
+- List columns to be dropped.
 """
-        response = ask_hf_llm(prompt, HF_MODEL_LOGIC, temperature=0.1)
+        raw_response = ask_hf_llm(prompt, HF_MODEL_LOGIC, temperature=0.1)
         
-        # FAILSAFE
-        if not response or len(response) < 50:
-            print("⚠️ Phase 2 response empty. Generating fallback...", file=sys.stderr)
-            return "## Clinical Preprocessing Blueprint (Fallback)\nModel failed to generate detailed strategy."
-        return response
+        # Post-process to ensure it's clean
+        clean_response = clean_strategy_text(raw_response)
+        
+        if not clean_response or len(clean_response) < 50:
+            return "Variable Analysis:\n\n[System Error]\n- Action: Review Data manually."
+            
+        return clean_response
 
     # ============================================================
     # PHASE 3: JSON MAPPING (Strict Configuration)
@@ -252,10 +234,6 @@ Analyze EACH variable and assign a processing strategy based on its **Medical Ar
 
     def _robust_json_generation(self, prompt: str, df_cols) -> Dict[str, Any]:
         for attempt in range(3):
-            if attempt > 0:
-                 print(f"   ⚠️ JSON Parse failed. Retrying (Attempt {attempt+1}/3)...", file=sys.stderr)
-            
-            # Attempt 0: Strict. Attempt 1: Looser. Attempt 2: Last resort.
             temp = 0.1 if attempt == 0 else 0.3
             raw = ask_hf_llm(prompt, HF_MODEL_LOGIC, temperature=temp)
             clean = extract_json_block(raw)
@@ -270,32 +248,28 @@ Analyze EACH variable and assign a processing strategy based on its **Medical Ar
 
     def _normalize_plan(self, data: Dict[str, Any]) -> Dict[str, Any]:
         normalized = {}
-        
-        # Expanded Mapping for Medical Terms
         ACTION_MAP = {
-            "standard scaling": "scale", "standard_scaling": "scale", "scale": "scale", "scaling": "scale", "normalize": "scale",
-            "impute": "impute", "imputation": "impute", "mean": "impute", "median": "impute", "mode": "impute",
-            "drop": "drop", "remove": "drop", "delete": "drop",
-            "one_hot": "one_hot_encode", "one_hot_encode": "one_hot_encode", "dummy": "one_hot_encode",
-            "label_encode": "label_encode", "label_encoding": "label_encode", "ordinal": "label_encode"
+            "standard scaling": "scale", "standard_scaling": "scale", "scale": "scale", "scaling": "scale",
+            "impute": "impute", "imputation": "impute", "mean": "impute", "mode": "impute",
+            "drop": "drop", "remove": "drop",
+            "one_hot": "one_hot_encode", "one_hot_encode": "one_hot_encode",
+            "label_encode": "label_encode", "label_encoding": "label_encode"
         }
 
         for col, info in data.items():
             if not isinstance(info, dict): continue
             
-            # Clean the action string
             raw_action = str(info.get("action", "drop")).lower()
-            clean_str = re.sub(r'[^\w\s]', '', raw_action).strip() # Remove punctuation
-            clean_str = re.sub(r'\s+', ' ', clean_str) # Collapse spaces
+            clean_str = re.sub(r'[^\w\s]', '', raw_action).strip()
+            clean_str = re.sub(r'\s+', ' ', clean_str)
 
             final_action = None
             if clean_str in ACTION_MAP:
                 final_action = ACTION_MAP[clean_str]
             
-            # Fuzzy match
             if not final_action:
-                if "impute" in clean_str or "missing" in clean_str: final_action = "impute"
-                elif "scale" in clean_str or "standard" in clean_str: final_action = "scale"
+                if "impute" in clean_str: final_action = "impute"
+                elif "scale" in clean_str: final_action = "scale"
                 elif "one_hot" in clean_str: final_action = "one_hot_encode"
                 elif "label" in clean_str: final_action = "label_encode"
                 else: final_action = "drop"
@@ -314,7 +288,7 @@ Analyze EACH variable and assign a processing strategy based on its **Medical Ar
         prompt = f"""
 SYSTEM ROLE:
 You are a **Strict MLOps Configuration Engine**. 
-Convert the provided Clinical Strategy into a strict JSON configuration.
+Convert the Clinical Strategy into JSON.
 
 ==================================================
 DATASET PROFILE (CHECK FLAGS):
@@ -327,9 +301,9 @@ CLINICAL STRATEGY:
 ==================================================
 RULES FOR JSON MAPPING:
 
-1. **MISSING DATA PRIORITY (CRITICAL)**:
-   - Check the PROFILE above. If a column has "🚨 CLINICAL ALERT", the Action **MUST** be "impute".
-   - IGNORE other actions (like scaling) for now. If it's missing, we MUST impute first.
+1. **MISSING DATA PRIORITY**:
+   - Check the PROFILE. If a column has "🚨 CLINICAL ALERT", the Action **MUST** be "impute".
+   - IGNORE other actions (like scaling) for now.
 
 2. **IF NO MISSING DATA**:
    - **Nominal** (Gender, Smoker) -> "one_hot_encode"
@@ -337,21 +311,12 @@ RULES FOR JSON MAPPING:
    - **Numeric** (Age, BP) -> "scale"
    - **ID/Date** -> "drop"
 
-3. **PARAMS**:
-   - For Impute: "mean" (numeric), "mode" (categorical).
-   - For Scale: "standard_scaler".
-
 OUTPUT FORMAT (Raw JSON only):
 {{
   "Creatinine_Level": {{
     "action": "impute",
     "params": "mean",
-    "reason": "Missing values detected (12%). Imputing with mean to preserve renal function distribution."
-  }},
-  "TNM_Stage": {{
-    "action": "label_encode",
-    "params": "ordinal",
-    "reason": "Preserving rank order of cancer progression."
+    "reason": "Missing values detected (12%)."
   }}
 }}
 """
@@ -381,7 +346,6 @@ if __name__ == "__main__":
 
     try:
         try:
-            # Try efficient engine first
             raw_df = pd.read_csv(args.file_path, sep=None, engine='python')
         except:
             raw_df = pd.read_csv(args.file_path)
@@ -389,7 +353,7 @@ if __name__ == "__main__":
         generator = MedicalPlanGenerator()
 
         if args.regenerate:
-            # REGENERATION FLOW (User edits the text, we rebuild JSON)
+            # REGENERATION FLOW
             plan = generator.generate_json_plan(raw_df, args.regenerate)
             result = { "plan": plan }
             print("__JSON_RESULT_START__")
