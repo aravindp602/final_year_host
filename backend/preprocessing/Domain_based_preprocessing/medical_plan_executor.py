@@ -5,6 +5,13 @@ import pandas as pd
 import numpy as np
 from sklearn.preprocessing import StandardScaler, LabelEncoder
 from sklearn.impute import SimpleImputer
+# Attempt to import IterativeImputer (requires explicit enable)
+try:
+    from sklearn.experimental import enable_iterative_imputer
+    from sklearn.impute import IterativeImputer
+except ImportError:
+    IterativeImputer = None
+
 import shutil
 
 # --- CONFIGURATION ---
@@ -21,16 +28,13 @@ LOG_DIR = sys.argv[4]
 
 # --- SETUP LOGGING DIRECTORY ---
 if os.path.exists(LOG_DIR):
-    try:
-        shutil.rmtree(LOG_DIR)
-    except Exception as e:
-        print(f"Warning: Could not clean log dir: {e}")
+    try: shutil.rmtree(LOG_DIR)
+    except: pass
 os.makedirs(LOG_DIR, exist_ok=True)
 print(f"Logging intermediate steps to: {LOG_DIR}")
 
 def save_log(df, step_num, step_name):
-    clean_name = step_name.lower().replace(" ", "_")
-    filename = f"{step_num}_{clean_name}.csv"
+    filename = f"{step_num}_{step_name.lower().replace(' ', '_')}.csv"
     path = os.path.join(LOG_DIR, filename)
     df.to_csv(path, index=False)
     print(f"   --> Saved log: {filename}")
@@ -41,137 +45,163 @@ try:
     plan = json.loads(PLAN_JSON)
     print(f"Loaded dataset with shape: {df.shape}")
 except Exception as e:
-    print(f"Error loading data or plan: {e}")
+    print(f"Error loading data: {e}")
     sys.exit(1)
 
 # ================================
-# EXECUTION ENGINE
-# Order:
-# DROP -> IMPUTE -> ONE-HOT -> LABEL -> SCALE -> FINAL CLEAN
+# HELPER: Extract Columns for Action
 # ================================
+def get_cols_with_action(action_keys):
+    """
+    Scans the plan's 'steps' to find columns that contain specific actions.
+    Returns a list of (column_name, parameters).
+    """
+    if isinstance(action_keys, str): action_keys = [action_keys]
+    
+    cols = []
+    for col, details in plan.items():
+        if col not in df.columns: continue
+        
+        # Check inside the 'steps' list
+        steps = details.get("steps", [])
+        for step in steps:
+            # We check both the raw 'action' key and the mapped 'moduleId'
+            act = step.get("action", "").lower()
+            if act in action_keys:
+                cols.append((col, step.get("params", {})))
+                
+    return cols
 
+# ================================
+# EXECUTION PIPELINE
+# ================================
 step_counter = 1
 
-# ----------------
-# 1. DROP
-# ----------------
-cols_to_drop = [col for col, details in plan.items() if details['action'] == 'drop']
+# ---------------- 1. DROP COLUMNS ----------------
+# We look for explicit drop actions or 'remove_duplicates' acting as drop
+drop_tasks = get_cols_with_action(["drop", "remove_duplicates", "drop_column"])
+cols_to_drop = list(set([c[0] for c in drop_tasks]))
+
 if cols_to_drop:
-    print(f"Running Drop Columns ({len(cols_to_drop)} columns)...")
-    existing = [c for c in cols_to_drop if c in df.columns]
-    if existing:
-        df.drop(columns=existing, inplace=True)
-        save_log(df, step_counter, "dropped_columns")
-        step_counter += 1
-
-# ----------------
-# 2. IMPUTE
-# ----------------
-cols_to_impute = [col for col, details in plan.items() if details['action'] == 'impute']
-if cols_to_impute:
-    print(f"Running Imputation ({len(cols_to_impute)} columns)...")
-
-    mean_cols = []
-    mode_cols = []
-
-    for col in cols_to_impute:
-        if col in df.columns:
-            strategy = plan[col].get('params', 'mean')
-            if strategy == 'mean':
-                mean_cols.append(col)
-            else:
-                mode_cols.append(col)
-
-    # Mean imputation (numeric)
-    if mean_cols:
-        for c in mean_cols:
-            df[c] = pd.to_numeric(df[c], errors='coerce')
-        imp_mean = SimpleImputer(strategy='mean')
-        df[mean_cols] = imp_mean.fit_transform(df[mean_cols])
-
-    # Mode imputation (categorical/ordinal)
-    if mode_cols:
-        imp_mode = SimpleImputer(strategy='most_frequent')
-        df[mode_cols] = imp_mode.fit_transform(df[mode_cols])
-
-    save_log(df, step_counter, "imputed_values")
+    print(f"Running Drop Logic on {len(cols_to_drop)} columns...")
+    df.drop(columns=cols_to_drop, inplace=True, errors='ignore')
+    save_log(df, step_counter, "dropped_cols")
     step_counter += 1
 
-# ----------------
-# 3. ONE-HOT ENCODING
-# ----------------
-cols_to_ohe = [col for col, details in plan.items() if details['action'] == 'one_hot_encode']
-if cols_to_ohe:
-    print(f"Running One-Hot Encoding ({len(cols_to_ohe)} columns)...")
-    existing = [c for c in cols_to_ohe if c in df.columns]
-    if existing:
-        df = pd.get_dummies(df, columns=existing, drop_first=True)
+# ---------------- 2. IMPUTATION ----------------
+impute_tasks = get_cols_with_action(["impute", "handle_missing_values"])
+if impute_tasks:
+    print(f"Running Imputation on {len(impute_tasks)} columns...")
+    
+    # Categorize by method
+    iterative_cols = [c for c, p in impute_tasks if p == 'iterative' or p == 'knn']
+    mean_cols = [c for c, p in impute_tasks if p == 'mean']
+    mode_cols = [c for c, p in impute_tasks if p == 'mode']
+    
+    # Fallback for others
+    remainder = [c[0] for c in impute_tasks if c[0] not in iterative_cols + mean_cols + mode_cols]
+    mean_cols.extend(remainder)
 
-        # Convert booleans to int
-        bool_cols = df.select_dtypes(include='bool').columns
+    # 1. Iterative (MICE) - Best for Clinical Vitals
+    if iterative_cols and IterativeImputer:
+        valid_iterative = [c for c in iterative_cols if pd.api.types.is_numeric_dtype(df[c])]
+        if valid_iterative:
+            try:
+                imputer = IterativeImputer(max_iter=10, random_state=0)
+                df[valid_iterative] = imputer.fit_transform(df[valid_iterative])
+            except Exception as e:
+                print(f"   ⚠️ MICE failed (likely non-numeric data), falling back to mean: {e}")
+                for c in valid_iterative: df[c] = df[c].fillna(df[c].mean())
+
+    # 2. Mean
+    if mean_cols:
+        for c in mean_cols:
+            if pd.api.types.is_numeric_dtype(df[c]):
+                df[c] = df[c].fillna(df[c].mean())
+
+    # 3. Mode
+    if mode_cols:
+        for c in mode_cols:
+            if not df[c].mode().empty:
+                df[c] = df[c].fillna(df[c].mode()[0])
+
+    save_log(df, step_counter, "imputed_data")
+    step_counter += 1
+
+# ---------------- 3. LOG TRANSFORM ----------------
+log_tasks = get_cols_with_action(["log", "log_transform"])
+if log_tasks:
+    print(f"Running Log Transform on {len(log_tasks)} columns...")
+    for col, _ in log_tasks:
+        if pd.api.types.is_numeric_dtype(df[col]):
+            # Use log1p to handle zeros safely
+            if (df[col] >= 0).all():
+                df[col] = np.log1p(df[col])
+            else:
+                print(f"   ⚠️ Skipping Log on {col} (negative values found)")
+    
+    save_log(df, step_counter, "log_transformed")
+    step_counter += 1
+
+# ---------------- 4. ENCODING ----------------
+encode_tasks = get_cols_with_action(["encode", "encoding"])
+if encode_tasks:
+    print(f"Running Encoding on {len(encode_tasks)} columns...")
+    
+    label_cols = [c for c, p in encode_tasks if p == 'label_encoder']
+    onehot_cols = [c for c, p in encode_tasks if p == 'one_hot_encoder']
+    
+    # Default fallback: Object -> OneHot, Int/Float (Ordinal) -> Label
+    for c, p in encode_tasks:
+        if c not in label_cols and c not in onehot_cols:
+            if pd.api.types.is_object_dtype(df[c]): onehot_cols.append(c)
+            else: label_cols.append(c)
+
+    # Label Encode
+    if label_cols:
+        le = LabelEncoder()
+        for c in label_cols:
+            df[c] = le.fit_transform(df[c].astype(str))
+
+    # One Hot Encode
+    if onehot_cols:
+        df = pd.get_dummies(df, columns=onehot_cols, drop_first=True)
+        # Fix boolean columns from get_dummies
+        bool_cols = df.select_dtypes(include=['bool']).columns
         df[bool_cols] = df[bool_cols].astype(int)
 
-        save_log(df, step_counter, "one_hot_encoded")
-        step_counter += 1
+    save_log(df, step_counter, "encoded_data")
+    step_counter += 1
 
-# ----------------
-# 4. LABEL ENCODING
-# ----------------
-cols_to_le = [col for col, details in plan.items() if details['action'] == 'label_encode']
-if cols_to_le:
-    print(f"Running Label Encoding ({len(cols_to_le)} columns)...")
-    le = LabelEncoder()
-    changed = False
-
-    for col in cols_to_le:
-        if col in df.columns:
-            df[col] = le.fit_transform(df[col].astype(str))
-            changed = True
-
-    if changed:
-        save_log(df, step_counter, "label_encoded")
-        step_counter += 1
-
-# ----------------
-# 5. SCALING
-# ----------------
-cols_to_scale = [col for col, details in plan.items() if details['action'] == 'scale']
-if cols_to_scale:
-    print(f"Running Scaling ({len(cols_to_scale)} columns)...")
-
-    numeric_scale = []
-    for c in cols_to_scale:
-        if c in df.columns:
-            df[c] = pd.to_numeric(df[c], errors='coerce')
-            if pd.api.types.is_numeric_dtype(df[c]):
-                numeric_scale.append(c)
-
-    if numeric_scale:
+# ---------------- 5. SCALING ----------------
+scale_tasks = get_cols_with_action(["scale", "scaling"])
+if scale_tasks:
+    print(f"Running Scaling on {len(scale_tasks)} columns...")
+    
+    # Filter columns that still exist (some might be dropped or renamed by OHE)
+    valid_scale_cols = []
+    for c, _ in scale_tasks:
+        if c in df.columns and pd.api.types.is_numeric_dtype(df[c]):
+            valid_scale_cols.append(c)
+    
+    if valid_scale_cols:
         scaler = StandardScaler()
-        df[numeric_scale] = scaler.fit_transform(df[numeric_scale])
+        df[valid_scale_cols] = scaler.fit_transform(df[valid_scale_cols])
+    
+    save_log(df, step_counter, "scaled_data")
+    step_counter += 1
 
-        save_log(df, step_counter, "scaled_features")
-        step_counter += 1
-
-# ----------------
-# FINAL CLEANING
-# ----------------
+# ---------------- FINAL CLEANUP ----------------
 print("Final data sanitization...")
+# Drop any remaining object columns to ensure ML compatibility
+obj_cols = df.select_dtypes(include=['object']).columns
+if len(obj_cols) > 0:
+    print(f"   ⚠️ Dropping remaining non-numeric columns: {list(obj_cols)}")
+    df.drop(columns=obj_cols, inplace=True)
 
-# Replace inf/nan
 df.replace([np.inf, -np.inf], np.nan, inplace=True)
 df.fillna(0, inplace=True)
 
-# Enforce numeric types where possible
-for col in df.columns:
-    try:
-        df[col] = pd.to_numeric(df[col])
-    except:
-        pass
-
-# ----------------
-# SAVE OUTPUT
-# ----------------
 try:
     df.to_csv(OUTPUT_PATH, index=False)
     print(f"Preprocessing done. Saved: {OUTPUT_PATH}")

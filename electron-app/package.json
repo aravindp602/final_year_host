@@ -34,6 +34,7 @@
     "@testing-library/user-event": "^13.5.0",
     "axios": "^1.13.2",
     "electron": "^31.0.0",
+    "framer-motion": "^12.29.2",
     "react": "^19.1.1",
     "react-dom": "^19.1.1",
     "react-scripts": "5.0.1",

@@ -20,7 +20,9 @@ if not HF_TOKEN:
     raise ValueError("❌ HF_TOKEN not found in .env")
 
 # --- MODEL CONFIGURATION ---
+# Summary: Creative model for long clinical reports
 HF_MODEL_SUMMARY = "meta-llama/Llama-3.2-3B-Instruct" 
+# Logic: Smarter model for technical reasoning and JSON mapping
 HF_MODEL_LOGIC = "meta-llama/Llama-3.1-8B-Instruct:novita"
 
 client = InferenceClient(api_key=HF_TOKEN)
@@ -29,38 +31,15 @@ client = InferenceClient(api_key=HF_TOKEN)
 # UTILITIES
 # ============================================================
 
-def auto_repair_json(text: str) -> str:
-    if not text: return text
-    open_braces = text.count("{")
-    close_braces = text.count("}")
-    if close_braces < open_braces: text += "}" * (open_braces - close_braces)
-    text = re.sub(r',\s*}', '}', text)
-    return text
-
-def extract_json_block(text: str) -> str:
+def clean_json_text(text: str) -> str:
+    """Robust JSON extraction."""
     if not text: return ""
-    text = re.sub(r'```json\s*', '', text)
-    text = re.sub(r'```\s*', '', text)
+    text = re.sub(r'```json', '', text, flags=re.IGNORECASE)
+    text = re.sub(r'```', '', text)
     start = text.find('{')
-    if start == -1: return ""
-    count = 0
-    for i, char in enumerate(text[start:]):
-        if char == '{': count += 1
-        elif char == '}': count -= 1
-        if count == 0: return text[start : start + i + 1]
-    return text[start:]
-
-def clean_strategy_text(text: str) -> str:
-    """
-    Strips Markdown bolding/italics to make the editor text cleaner.
-    """
-    if not text: return ""
-    # Remove **bold**
-    text = re.sub(r'\*\*(.*?)\*\*', r'\1', text)
-    # Remove *italics* (but keep bullet points like * Item)
-    text = re.sub(r'([^*])\*([^*]+)\*', r'\1\2', text)
-    # Ensure standard bullet points
-    text = text.replace("* ", "- ")
+    end = text.rfind('}')
+    if start != -1 and end != -1:
+        return text[start : end + 1]
     return text
 
 def ask_hf_llm(prompt: str, model: str, temperature: float = 0.1) -> str:
@@ -91,12 +70,24 @@ def ask_hf_llm(prompt: str, model: str, temperature: float = 0.1) -> str:
 # ============================================================
 
 class MedicalPlanGenerator:
-    def __init__(self, target_col: str = "Level"):
-        self.target_col = target_col
+    def __init__(self):
         sys.stdout.reconfigure(encoding='utf-8')
-        print(f"🚀 Initializing Medical Engine...", file=sys.stderr, flush=True)
+        print(f"🚀 Initializing Clinical Engine...", file=sys.stderr, flush=True)
+        
+        self.MODULE_LIBRARY = {
+            "remove_duplicates": {"id": "dp1", "label": "Remove Duplicates (D)"},
+            "impute": {"id": "dp2", "label": "Handle Missing Values (D)"},
+            "outlier": {"id": "dp3", "label": "Outlier Removal (D)"},
+            "polynomial": {"id": "dp5", "label": "Polynomial Features (D)"},
+            "log": {"id": "dp6", "label": "Log Transform (D)"},
+            "encode": {"id": "dp7", "label": "Encoding (D)"},
+            "scale": {"id": "dp8", "label": "Scaling (D)"},
+            "normalize": {"id": "dp9", "label": "Normalization (D)"},
+            "pca": {"id": "dp10", "label": "PCA (D)"},
+            "drop": {"id": "dp_drop", "label": "Drop Column"}
+        }
 
-    # ---------------- ROBUST DATA PROFILING ----------------
+    # ---------------- DATA PROFILING ----------------
 
     def get_dataset_profile(self, df: pd.DataFrame) -> str:
         col_stats = []
@@ -105,8 +96,6 @@ class MedicalPlanGenerator:
         for col in df_clean.columns:
             dtype = str(df_clean[col].dtype)
             missing_count = int(df_clean[col].isnull().sum())
-            total_rows = len(df_clean)
-            missing_pct = (missing_count / total_rows) * 100
             unique = int(df_clean[col].nunique())
             
             if unique < 15:
@@ -114,172 +103,198 @@ class MedicalPlanGenerator:
             else:
                 samples = list(df_clean[col].dropna().unique()[:5])
 
-            missing_flag = ""
-            if missing_count > 0:
-                missing_flag = f"[🚨 CLINICAL ALERT: {missing_count} MISSING VALUES ({missing_pct:.1f}%)]"
-            else:
-                missing_flag = "[Complete]"
+            missing_flag = f"[🚨 ALERT: {missing_count} MISSING]" if missing_count > 0 else "[Complete]"
 
-            ordinal_hint = ""
-            if dtype == 'object' and any(x in str(samples).lower() for x in ['low', 'medium', 'high', 'stage', 'grade']):
-                ordinal_hint = "(Potential Ordinal/Ranked Data)"
+            skew_hint = ""
+            if pd.api.types.is_numeric_dtype(df_clean[col]):
+                try:
+                    skew = df_clean[col].skew()
+                    if abs(skew) > 1.5: skew_hint = "(Highly Skewed)"
+                except: pass
 
             stat_str = (
-                f"VAR: '{col}'\n"
-                f"   - Type: {dtype} {ordinal_hint}\n"
-                f"   - Status: {missing_flag}\n"
-                f"   - Distinct Count: {unique}\n"
-                f"   - Samples: {samples}\n"
+                f"VAR: '{col}' | Type: {dtype} {skew_hint} | {missing_flag} | Samples: {samples}"
             )
             col_stats.append(stat_str)
 
         return "\n".join(col_stats)
 
     # ============================================================
-    # PHASE 1: CLINICAL REPORT (Summary)
+    # PHASE 1: COMPREHENSIVE CLINICAL REPORT
     # ============================================================
 
     def generate_executive_summary(self, df: pd.DataFrame) -> str:
-        print("\n--- Phase 1: Clinical Executive Summary ---", file=sys.stderr, flush=True)
+        print("\n--- Phase 1: Clinical Assessment ---", file=sys.stderr, flush=True)
         profile = self.get_dataset_profile(df)
 
         prompt = f"""
 SYSTEM ROLE:
-You are the **Chief Medical Information Officer (CMIO)**.
-Evaluate this dataset for a Clinical AI Model.
+You are the **Chief Medical Information Officer (CMIO)** at a leading research hospital.
+Your task is to write a **Comprehensive Clinical Data Assessment**.
 
-==================================================
-DATASET AUTOPSY:
-{profile}
-
-TARGET VARIABLE: '{self.target_col}'
-
-==================================================
-INSTRUCTIONS:
-Write a **Clinical Data Assessment** (Markdown).
-
-1. **Domain Identification**: Identify the medical specialty.
-2. **Clinical Feasibility**: Is the target variable '{self.target_col}' a valid outcome?
-3. **Data Hygiene Alert**: Summarize "🚨 CLINICAL ALERT" tags.
-4. **Privacy Check**: Note PII.
-
-Tone: Professional, Medically Accurate, Concise.
-"""
-        return ask_hf_llm(prompt, HF_MODEL_SUMMARY, temperature=0.2)
-
-    # ============================================================
-    # PHASE 2: DETAILED STRATEGY (CLEAN TEXT FOR EDITOR)
-    # ============================================================
-
-    def generate_detailed_strategy(self, df: pd.DataFrame, executive_summary: str) -> str:
-        print("\n--- Phase 2: Detailed Clinical Blueprint ---", file=sys.stderr, flush=True)
-        profile = self.get_dataset_profile(df)
-
-        prompt = f"""
-SYSTEM ROLE:
-You are a **Lead Clinical Data Scientist**.
-Develop a **Domain-Specific Preprocessing Strategy**.
-
-==================================================
 DATA PROFILE:
 {profile}
 
-==================================================
-TASK:
-Analyze EACH variable. 
+INSTRUCTIONS:
+Write a detailed report (minimum 300 words) covering:
+1.  **Domain & Specialty**: Explicitly identify the medical field (e.g., Oncology, Cardiology) and the likely source of data (EHR, Clinical Trial, Wearables).
+2.  **Pathophysiological Context**: Analyze the key variables. Explain *what* they measure biologically (e.g., "Creatinine is a byproduct of muscle metabolism used to assess renal filtration").
+3.  **Cohort Characteristics**: Describe the patient population based on the data samples (e.g., age range, gender distribution).
+4.  **Data Integrity & Risk**: Discuss the clinical impact of missing or skewed data on potential diagnosis models.
 
-**STRICT FORMATTING RULES FOR EDITOR:**
-1. Do NOT use markdown bolding (**) or italics (*) inside the text.
-2. Use simple bullet points (-) and indentation.
-3. Keep it clean and readable as plain text.
-
-### LOGIC GUIDELINES:
-
-* **IF MISSING DATA EXISTS**:
-    * Action: Impute (Mean for numeric, Mode for categorical).
-    * Reason: Explain why imputing is better than dropping.
-
-* **IF NO MISSING DATA**:
-    * **VITAL SIGNS (Continuous)**: Standard Scaling.
-    * **RISK FACTORS (Nominal)**: One-Hot Encoding.
-    * **DISEASE GRADING (Ordinal)**: Label Encoding.
-    * **IDS**: Drop.
-
-### REQUIRED OUTPUT FORMAT:
-
-Variable Analysis:
-
-[Column Name]
-  - Clinical Relevance: [Why is this important?]
-  - Missing Status: [Has Missing / Complete]
-  - Action: [Impute / Scale / One-Hot / Label / Drop]
-  - Reasoning: [Explanation]
-
-Summary of Exclusions:
-- List columns to be dropped.
+TONE: Professional, Academic, and Medically Precise.
 """
-        raw_response = ask_hf_llm(prompt, HF_MODEL_LOGIC, temperature=0.1)
-        
-        # Post-process to ensure it's clean
-        clean_response = clean_strategy_text(raw_response)
-        
-        if not clean_response or len(clean_response) < 50:
-            return "Variable Analysis:\n\n[System Error]\n- Action: Review Data manually."
-            
-        return clean_response
+        return ask_hf_llm(prompt, HF_MODEL_SUMMARY, temperature=0.3)
 
     # ============================================================
-    # PHASE 3: JSON MAPPING (Strict Configuration)
+    # PHASE 2: BIOSTATISTICAL BLUEPRINT
     # ============================================================
 
-    def _robust_json_generation(self, prompt: str, df_cols) -> Dict[str, Any]:
+    def generate_detailed_strategy(self, df: pd.DataFrame, executive_summary: str) -> str:
+        print("\n--- Phase 2: Technical Strategy ---", file=sys.stderr, flush=True)
+        profile = self.get_dataset_profile(df)
+
+        prompt = f"""
+SYSTEM ROLE:
+You are a **Senior Biostatistician**. Create a **Technical Preprocessing Blueprint** for Machine Learning.
+Focus on **Biostatistical Reasoning**—why is a specific transformation mathematically or biologically necessary?
+
+AVAILABLE MODULES:
+- dp1: Remove Duplicates
+- dp2: Handle Missing Values (Imputation)
+- dp3: Outlier Removal
+- dp6: Log Transform
+- dp7: Encoding
+- dp8: Scaling
+- dp_drop: Drop Column
+
+DATA PROFILE:
+{profile}
+
+### BIOSTATISTICAL LOGIC (Apply Strictly):
+
+1.  **VITAL SIGNS (Continuous)**:
+    * *Action*: **Scaling (dp8)**.
+    * *Medical Reason*: "Standardization (Z-score) is required because physiological variables (e.g., Age in years vs BP in mmHg) exist on vastly different scales, which biases distance-based algorithms."
+    * *If Skewed*: **Log Transform (dp6)** then Scale. (Reason: "Normalizing the right-skewed distribution typical of serum biomarkers").
+    * *If Missing*: **Impute (dp2)**. (Reason: "Multivariate Iterative Imputation (MICE) is preferred to preserve physiological correlations, such as the relationship between BMI and Blood Pressure").
+
+2.  **CATEGORICAL FACTORS (Nominal)**:
+    * *Action*: **Encoding (dp7)** (One-Hot).
+    * *Medical Reason*: "Variables like Gender or Smoking Status lack intrinsic biological rank; One-Hot Encoding prevents the model from assuming a false ordinal relationship."
+
+3.  **DISEASE STAGES (Ordinal)**:
+    * *Action*: **Encoding (dp7)** (Label Encode).
+    * *Medical Reason*: "Preserving the inherent prognostic rank of disease progression (e.g., Stage I < Stage II) is critical for accurate severity modeling."
+
+4.  **ADMINISTRATIVE**:
+    * *Action*: **Drop Column**.
+    * *Medical Reason*: "Patient identifiers have no pathophysiological relevance and pose a privacy risk."
+
+OUTPUT FORMAT (Markdown):
+For each column, list the **Steps** and the **Biostatistical Reasoning**.
+"""
+        response = ask_hf_llm(prompt, HF_MODEL_LOGIC, temperature=0.1)
+        if not response or len(response) < 50: return "## Fallback Strategy"
+        return response
+
+    # ============================================================
+    # PHASE 3: JSON MAPPING & SANITIZATION
+    # ============================================================
+
+    def _robust_json_generation(self, prompt: str) -> Dict[str, Any]:
         for attempt in range(3):
-            temp = 0.1 if attempt == 0 else 0.3
-            raw = ask_hf_llm(prompt, HF_MODEL_LOGIC, temperature=temp)
-            clean = extract_json_block(raw)
-            repaired = auto_repair_json(clean)
+            if attempt > 0: print(f"   ⚠️ JSON Parse failed. Retrying...", file=sys.stderr)
+            raw = ask_hf_llm(prompt, HF_MODEL_LOGIC, temperature=0.1)
+            clean = clean_json_text(raw)
             try:
-                data = json.loads(repaired)
-                if len(data.keys()) > 0: 
-                     return data
-            except Exception as e:
-                print(f"   Debug: JSON Error on attempt {attempt+1}: {e}", file=sys.stderr)
+                data = json.loads(clean)
+                if len(data.keys()) > 0: return data
+            except: pass
         return {}
 
     def _normalize_plan(self, data: Dict[str, Any]) -> Dict[str, Any]:
         normalized = {}
-        ACTION_MAP = {
-            "standard scaling": "scale", "standard_scaling": "scale", "scale": "scale", "scaling": "scale",
-            "impute": "impute", "imputation": "impute", "mean": "impute", "mode": "impute",
-            "drop": "drop", "remove": "drop",
-            "one_hot": "one_hot_encode", "one_hot_encode": "one_hot_encode",
-            "label_encode": "label_encode", "label_encoding": "label_encode"
-        }
-
         for col, info in data.items():
             if not isinstance(info, dict): continue
             
-            raw_action = str(info.get("action", "drop")).lower()
-            clean_str = re.sub(r'[^\w\s]', '', raw_action).strip()
-            clean_str = re.sub(r'\s+', ' ', clean_str)
+            raw_actions_list = info.get("actions", [])
+            if not raw_actions_list and isinstance(info.get("action"), str):
+                 raw_actions_list = [x.strip() for x in info.get("action").split(',')]
 
-            final_action = None
-            if clean_str in ACTION_MAP:
-                final_action = ACTION_MAP[clean_str]
-            
-            if not final_action:
-                if "impute" in clean_str: final_action = "impute"
-                elif "scale" in clean_str: final_action = "scale"
-                elif "one_hot" in clean_str: final_action = "one_hot_encode"
-                elif "label" in clean_str: final_action = "label_encode"
-                else: final_action = "drop"
+            normalized_actions = []
+            for raw_action in raw_actions_list:
+                act_str = str(raw_action).lower().strip()
+                module_key = None
+                final_params = "null"
 
-            normalized[col] = {
-                "action": final_action,
-                "params": info.get("params", "null"),
-                "reason": info.get("reason", "Standard clinical preprocessing")
-            }
+                if "duplicate" in act_str: module_key = "remove_duplicates"
+                elif "impute" in act_str or "missing" in act_str:
+                    module_key = "impute"
+                    final_params = "iterative" 
+                elif "outlier" in act_str: module_key = "outlier"
+                elif "log" in act_str: module_key = "log"
+                elif "drop" in act_str: module_key = "drop"
+                elif "encode" in act_str:
+                    module_key = "encode"
+                    reason_txt = str(info.get("reason", "")).lower()
+                    if "label" in act_str or "ordinal" in reason_txt or "rank" in reason_txt:
+                        final_params = "label_encoder"
+                    else:
+                        final_params = "one_hot_encoder"
+                elif "scale" in act_str:
+                    module_key = "scale"
+                    final_params = "standard_scaler"
+                elif "normal" in act_str: module_key = "normalize"
+                elif "pca" in act_str: module_key = "pca"
+
+                if module_key:
+                    mod_info = self.MODULE_LIBRARY.get(module_key, {})
+                    if mod_info:
+                        normalized_actions.append({
+                            "action": module_key,
+                            "moduleId": mod_info["id"],
+                            "label": mod_info["label"],
+                            "params": final_params
+                        })
+
+            if normalized_actions:
+                normalized[col] = {
+                    "steps": normalized_actions,
+                    "reason": info.get("reason", "Standard preprocessing sequence.")
+                }
         return normalized
+
+    def _sanitize_plan_logic(self, df: pd.DataFrame, plan: Dict[str, Any]) -> Dict[str, Any]:
+        """
+        HARD VALIDATION: Remove 'impute' if column has 0 missing values.
+        """
+        missing_series = df.isnull().sum()
+        cols_with_missing = missing_series[missing_series > 0].index.tolist()
+
+        sanitized_plan = {}
+        for col, details in plan.items():
+            if col not in df.columns: continue
+            
+            original_steps = details.get("steps", [])
+            cleaned_steps = []
+            
+            for step in original_steps:
+                if step['action'] == 'impute':
+                    if col in cols_with_missing:
+                        cleaned_steps.append(step)
+                    else:
+                        # Skip adding imputation if no missing data
+                        pass 
+                else:
+                    cleaned_steps.append(step)
+            
+            if cleaned_steps:
+                sanitized_plan[col] = {
+                    "steps": cleaned_steps,
+                    "reason": details.get("reason", "")
+                }
+        return sanitized_plan
 
     def generate_json_plan(self, df: pd.DataFrame, detailed_strategy: str) -> Dict[str, Any]:
         print("\n--- Phase 3: JSON Configuration ---", file=sys.stderr, flush=True)
@@ -287,56 +302,37 @@ Summary of Exclusions:
 
         prompt = f"""
 SYSTEM ROLE:
-You are a **Strict MLOps Configuration Engine**. 
-Convert the Clinical Strategy into JSON.
+You are an MLOps Engine. Map the strategy to JSON.
 
-==================================================
-DATASET PROFILE (CHECK FLAGS):
+DATA PROFILE:
 {profile}
 
-==================================================
-CLINICAL STRATEGY:
+STRATEGY:
 {detailed_strategy}
 
-==================================================
-RULES FOR JSON MAPPING:
+INSTRUCTIONS:
+1. Return a JSON dictionary. Keys = Column Names.
+2. Values = Object with "actions" (List of strings) and "reason" (String).
+3. **CRITICAL**: Copy the full "Biostatistical Reasoning" from the strategy into the 'reason' field verbatim.
 
-1. **MISSING DATA PRIORITY**:
-   - Check the PROFILE. If a column has "🚨 CLINICAL ALERT", the Action **MUST** be "impute".
-   - IGNORE other actions (like scaling) for now.
-
-2. **IF NO MISSING DATA**:
-   - **Nominal** (Gender, Smoker) -> "one_hot_encode"
-   - **Ordinal** (Stage I/II) -> "label_encode"
-   - **Numeric** (Age, BP) -> "scale"
-   - **ID/Date** -> "drop"
-
-OUTPUT FORMAT (Raw JSON only):
+OUTPUT EXAMPLE:
 {{
-  "Creatinine_Level": {{
-    "action": "impute",
-    "params": "mean",
-    "reason": "Missing values detected (12%)."
+  "Creatinine": {{
+    "actions": ["impute", "log", "scale"],
+    "reason": "Iterative imputation preserves correlations. Log transform normalizes skewed biological markers, followed by standardization."
   }}
 }}
 """
-        data = self._robust_json_generation(prompt, df.columns)
-        return self._normalize_plan(data)
-
-    # ============================================================
-    # MAIN EXECUTION FLOW
-    # ============================================================
+        data = self._robust_json_generation(prompt)
+        normalized = self._normalize_plan(data)
+        final_plan = self._sanitize_plan_logic(df, normalized)
+        return final_plan
 
     def run(self, df: pd.DataFrame):
         summary = self.generate_executive_summary(df)
         strategy = self.generate_detailed_strategy(df, summary)
         plan = self.generate_json_plan(df, strategy)
-        
-        return {
-            "plan": plan,
-            "summary": summary,
-            "strategy": strategy
-        }
+        return { "plan": plan, "summary": summary, "strategy": strategy }
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
@@ -345,22 +341,18 @@ if __name__ == "__main__":
     args = parser.parse_args()
 
     try:
-        try:
-            raw_df = pd.read_csv(args.file_path, sep=None, engine='python')
-        except:
-            raw_df = pd.read_csv(args.file_path)
+        try: raw_df = pd.read_csv(args.file_path, sep=None, engine='python')
+        except: raw_df = pd.read_csv(args.file_path)
 
         generator = MedicalPlanGenerator()
 
         if args.regenerate:
-            # REGENERATION FLOW
             plan = generator.generate_json_plan(raw_df, args.regenerate)
             result = { "plan": plan }
             print("__JSON_RESULT_START__")
             print(json.dumps(result))
             print("__JSON_RESULT_END__")
         else:
-            # INITIAL FLOW
             result = generator.run(raw_df)
             print("__JSON_RESULT_START__")
             print(json.dumps(result))
