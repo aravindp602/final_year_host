@@ -4,14 +4,9 @@ import json
 import pandas as pd
 import numpy as np
 from sklearn.preprocessing import StandardScaler, LabelEncoder
-from sklearn.impute import SimpleImputer
-# Attempt to import IterativeImputer (requires explicit enable)
-try:
-    from sklearn.experimental import enable_iterative_imputer
-    from sklearn.impute import IterativeImputer
-except ImportError:
-    IterativeImputer = None
-
+# Explicitly enabling experimental MICE
+from sklearn.experimental import enable_iterative_imputer 
+from sklearn.impute import IterativeImputer
 import shutil
 
 # --- CONFIGURATION ---
@@ -78,7 +73,6 @@ def get_cols_with_action(action_keys):
 step_counter = 1
 
 # ---------------- 1. DROP COLUMNS ----------------
-# We look for explicit drop actions or 'remove_duplicates' acting as drop
 drop_tasks = get_cols_with_action(["drop", "remove_duplicates", "drop_column"])
 cols_to_drop = list(set([c[0] for c in drop_tasks]))
 
@@ -88,42 +82,30 @@ if cols_to_drop:
     save_log(df, step_counter, "dropped_cols")
     step_counter += 1
 
-# ---------------- 2. IMPUTATION ----------------
+# ---------------- 2. IMPUTATION (MICE ONLY) ----------------
 impute_tasks = get_cols_with_action(["impute", "handle_missing_values"])
 if impute_tasks:
-    print(f"Running Imputation on {len(impute_tasks)} columns...")
+    print(f"Running Imputation (MICE Only) on {len(impute_tasks)} columns...")
     
-    # Categorize by method
-    iterative_cols = [c for c, p in impute_tasks if p == 'iterative' or p == 'knn']
-    mean_cols = [c for c, p in impute_tasks if p == 'mean']
-    mode_cols = [c for c, p in impute_tasks if p == 'mode']
+    # Identify all columns targeted for imputation (ignoring specific params like 'mean'/'mode')
+    cols_to_impute = list(set([c[0] for c in impute_tasks if c[0] in df.columns]))
     
-    # Fallback for others
-    remainder = [c[0] for c in impute_tasks if c[0] not in iterative_cols + mean_cols + mode_cols]
-    mean_cols.extend(remainder)
+    # Filter for Numeric Columns (MICE requirement)
+    numeric_cols = [c for c in cols_to_impute if pd.api.types.is_numeric_dtype(df[c])]
+    non_numeric_cols = [c for c in cols_to_impute if c not in numeric_cols]
 
-    # 1. Iterative (MICE) - Best for Clinical Vitals
-    if iterative_cols and IterativeImputer:
-        valid_iterative = [c for c in iterative_cols if pd.api.types.is_numeric_dtype(df[c])]
-        if valid_iterative:
-            try:
-                imputer = IterativeImputer(max_iter=10, random_state=0)
-                df[valid_iterative] = imputer.fit_transform(df[valid_iterative])
-            except Exception as e:
-                print(f"   ⚠️ MICE failed (likely non-numeric data), falling back to mean: {e}")
-                for c in valid_iterative: df[c] = df[c].fillna(df[c].mean())
-
-    # 2. Mean
-    if mean_cols:
-        for c in mean_cols:
-            if pd.api.types.is_numeric_dtype(df[c]):
-                df[c] = df[c].fillna(df[c].mean())
-
-    # 3. Mode
-    if mode_cols:
-        for c in mode_cols:
-            if not df[c].mode().empty:
-                df[c] = df[c].fillna(df[c].mode()[0])
+    # Apply MICE (IterativeImputer)
+    if numeric_cols:
+        try:
+            print(f"   -> Applying Iterative Imputer to {len(numeric_cols)} numeric columns...")
+            # MICE: Multivariate Imputation by Chained Equations
+            imputer = IterativeImputer(max_iter=10, random_state=0)
+            df[numeric_cols] = imputer.fit_transform(df[numeric_cols])
+        except Exception as e:
+            print(f"   ❌ MICE Imputation Failed: {e}")
+    
+    if non_numeric_cols:
+        print(f"   ⚠️ Skipped imputation for non-numeric columns (MICE requires numeric data): {non_numeric_cols}")
 
     save_log(df, step_counter, "imputed_data")
     step_counter += 1

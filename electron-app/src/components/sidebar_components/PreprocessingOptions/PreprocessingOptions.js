@@ -19,8 +19,8 @@ const PreprocessingOptions = ({
         boxShadow: "0 1px 3px rgba(0,0,0,0.1)",
       }}
     >
-      <h4 style={{ marginBottom: "10px" }}>Drag-and-Drop Modules</h4>
-
+      {/* <h4 style={{ marginBottom: "10px" }}>Drag-and-Drop Modules</h4> */}
+      <h3 style={styles.heading}>Drag-and-Drop Modules</h3>
       {/* Tabs */}
       <div
         style={{
@@ -81,12 +81,12 @@ const PreprocessingOptions = ({
       </div>
 
       {/* Module List Content - Updated to Grid Layout */}
-      <div 
-        style={{ 
-          display: "grid", 
+      <div
+        style={{
+          display: "grid",
           gridTemplateColumns: "1fr 1fr",
-          gap: "10px", 
-          minHeight: "50px" 
+          gap: "10px",
+          minHeight: "50px"
         }}
       >
         {activeTab === "normal" && (
@@ -145,5 +145,18 @@ const PreprocessingOptions = ({
     </div>
   );
 };
+
+const styles = {
+  heading: {
+    fontSize: "16px",
+    fontWeight: "600",
+    color: "#475569", // Slate 600
+    margin: "0 0 4px 0",
+    textTransform: "uppercase",
+    letterSpacing: "0.025em",
+    marginBottom: "15px",
+    marginTop: "10px",
+  }
+}
 
 export default PreprocessingOptions;

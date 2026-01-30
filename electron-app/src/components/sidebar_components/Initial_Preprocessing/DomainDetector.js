@@ -1,7 +1,7 @@
 import React, { useState, useEffect } from "react";
 import axios from "axios";
 import ErrorPopup from '../../ErrorPopup';
-import { API_BASE_URL } from "../../../config"; 
+import { API_BASE_URL } from "../../../config";
 
 const DomainDetector = ({ file, onDomainDetected, setLoading }) => {
   const [geminiDomain, setGeminiDomain] = useState(null);
@@ -40,7 +40,7 @@ const DomainDetector = ({ file, onDomainDetected, setLoading }) => {
       // Backend currently returns simple { domain: "Medical" } in DEV MODE.
       // If you update the Python logic later to return details, this UI will show them.
       // For now, we fallback to safe defaults if fields are missing.
-      
+
       const {
         gemini_domain,
         groq_domain,
@@ -74,14 +74,15 @@ const DomainDetector = ({ file, onDomainDetected, setLoading }) => {
       <button
         onClick={handleFindDomain}
         style={{
+          display: "block",
+          margin: "15px auto",
           padding: "8px 12px",
           border: "none",
           borderRadius: 6,
           backgroundColor: "#007bff",
           color: "white",
           cursor: "pointer",
-          width: "100%",
-          marginTop: 15,
+          width: "60%",
         }}
       >
         Find Domain
@@ -102,9 +103,9 @@ const DomainDetector = ({ file, onDomainDetected, setLoading }) => {
           {geminiDomain && <p><strong>Gemini Prediction:</strong> {geminiDomain}</p>}
           {groqDomain && <p><strong>Groq Prediction:</strong> {groqDomain}</p>}
           {ollamaDomain && <p><strong>Ollama Prediction:</strong> {ollamaDomain}</p>}
-          
+
           {(geminiDomain || groqDomain) && <hr />}
-          
+
           <p><strong>Final Domain:</strong> {finalDomain}</p>
           {targetColumn && <p><strong>Target Column:</strong> {targetColumn}</p>}
         </div>

@@ -12,7 +12,8 @@ const OutputOptions = ({ outputModules }) => {
         marginBottom: 90, // Keep the bottom margin here
       }}
     >
-      <h4 style={{ marginBottom: "10px" }}>Output Options</h4>
+      {/* <h4 style={{ marginBottom: "10px" }}>Output Options</h4> */}
+      <h3 style={styles.heading}>Output Options</h3>
 
       {/* Grid Container */}
       <div
@@ -43,5 +44,18 @@ const OutputOptions = ({ outputModules }) => {
     </div>
   );
 };
+
+const styles = {
+    heading: {
+    fontSize: "16px",
+    fontWeight: "600",
+    color: "#475569", // Slate 600
+    margin: "0 0 4px 0",
+    textTransform: "uppercase",
+    letterSpacing: "0.025em",
+    marginBottom: "15px",
+    marginTop: "10px",
+  }
+}
 
 export default OutputOptions;
