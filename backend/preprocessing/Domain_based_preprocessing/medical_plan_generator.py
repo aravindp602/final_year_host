@@ -5,9 +5,31 @@ import os
 import argparse
 import numpy as np
 import re
+import traceback
 from typing import Dict, Any
 from huggingface_hub import InferenceClient
 from dotenv import load_dotenv
+
+def force_utf8_streams():
+    """Forces stdout/stderr to UTF-8 to prevent Windows crashes."""
+    try:
+        if sys.stdout.encoding.lower() != 'utf-8':
+            sys.stdout.reconfigure(encoding='utf-8')
+        if sys.stderr.encoding.lower() != 'utf-8':
+            sys.stderr.reconfigure(encoding='utf-8')
+    except Exception:
+        pass
+
+force_utf8_streams()
+
+def safe_log(message):
+    """Safely prints logs, replacing crashing characters like smart quotes/dashes."""
+    try:
+        print(message, file=sys.stderr, flush=True)
+    except UnicodeEncodeError:
+        # Fallback: Convert to ASCII, replacing errors with '?'
+        clean_msg = message.encode('ascii', 'replace').decode('ascii')
+        print(clean_msg, file=sys.stderr, flush=True)
 
 # ============================================================
 # ENV & CONFIG
@@ -17,34 +39,47 @@ load_dotenv(os.path.join(os.path.dirname(__file__), '..', '..', '.env'))
 
 HF_TOKEN = os.getenv("HF_TOKEN")
 if not HF_TOKEN:
-    raise ValueError("❌ HF_TOKEN not found in .env")
+    safe_log("[Critical] HF_TOKEN not found in .env")
+    # Don't crash immediately, let main block handle it cleanly
 
 # --- MODEL CONFIGURATION ---
-# Summary: Creative model for long clinical reports
 HF_MODEL_SUMMARY = "meta-llama/Llama-3.2-3B-Instruct" 
-# Logic: Smarter model for technical reasoning and JSON mapping
 HF_MODEL_LOGIC = "meta-llama/Llama-3.1-8B-Instruct:novita"
 
-client = InferenceClient(api_key=HF_TOKEN)
+try:
+    client = InferenceClient(api_key=HF_TOKEN)
+except:
+    client = None
 
 # ============================================================
 # UTILITIES
 # ============================================================
 
 def clean_json_text(text: str) -> str:
-    """Robust JSON extraction."""
+    """Robust JSON extraction handling smart quotes and formatting errors."""
     if not text: return ""
+    
+    # [FIX] Replace Smart Quotes/Dashes that break JSON
+    text = text.replace('“', '"').replace('”', '"').replace('‘', "'").replace('’', "'")
+    text = text.replace('—', '-')
+    
     text = re.sub(r'```json', '', text, flags=re.IGNORECASE)
     text = re.sub(r'```', '', text)
+    # Remove C-style comments
+    text = re.sub(r'//.*', '', text)
+    # Fix trailing commas
+    text = re.sub(r',(\s*[}\]])', r'\1', text)
+    
     start = text.find('{')
     end = text.rfind('}')
     if start != -1 and end != -1:
         return text[start : end + 1]
-    return text
+    return text.strip()
 
 def ask_hf_llm(prompt: str, model: str, temperature: float = 0.1) -> str:
+    if not client: return ""
     try:
-        print(f"   ⏳ Requesting {model}...", file=sys.stderr, flush=True)
+        safe_log(f"   [Step] Requesting {model}...")
         stream = client.chat.completions.create(
             model=model,
             messages=[{"role": "user", "content": prompt}],
@@ -60,9 +95,9 @@ def ask_hf_llm(prompt: str, model: str, temperature: float = 0.1) -> str:
         return output
     except Exception as e:
         if model != HF_MODEL_LOGIC:
-            print(f"⚠️ Model {model} failed, switching to fallback...", file=sys.stderr)
+            safe_log("   [Warn] Model failed, switching fallback...")
             return ask_hf_llm(prompt, HF_MODEL_LOGIC, temperature)
-        print(f"❌ HF LLM Error: {e}", file=sys.stderr)
+        safe_log(f"   [Error] HF LLM Error: {e}")
         return ""
 
 # ============================================================
@@ -71,8 +106,7 @@ def ask_hf_llm(prompt: str, model: str, temperature: float = 0.1) -> str:
 
 class MedicalPlanGenerator:
     def __init__(self):
-        sys.stdout.reconfigure(encoding='utf-8')
-        print(f"🚀 Initializing Clinical Engine...", file=sys.stderr, flush=True)
+        safe_log("[Init] Initializing Clinical Engine...")
         
         self.MODULE_LIBRARY = {
             "remove_duplicates": {"id": "dp1", "label": "Remove Duplicates (D)"},
@@ -90,41 +124,38 @@ class MedicalPlanGenerator:
     # ---------------- DATA PROFILING ----------------
 
     def get_dataset_profile(self, df: pd.DataFrame) -> str:
-        col_stats = []
-        df_clean = df.replace([r'^\s*$', r'^\?$', r'^NA$', r'^nan$', r'^null$', r'^None$'], np.nan, regex=True)
+        try:
+            col_stats = []
+            df_clean = df.replace([r'^\s*$', r'^\?$', r'^NA$', r'^nan$', r'^null$', r'^None$'], np.nan, regex=True)
 
-        for col in df_clean.columns:
-            dtype = str(df_clean[col].dtype)
-            missing_count = int(df_clean[col].isnull().sum())
-            unique = int(df_clean[col].nunique())
-            
-            if unique < 15:
-                samples = list(df_clean[col].dropna().unique())
-            else:
-                samples = list(df_clean[col].dropna().unique()[:5])
+            for col in df_clean.columns:
+                dtype = str(df_clean[col].dtype)
+                missing_count = int(df_clean[col].isnull().sum())
+                unique = int(df_clean[col].nunique())
+                samples = list(df_clean[col].dropna().unique())[:5]
 
-            missing_flag = f"[🚨 ALERT: {missing_count} MISSING]" if missing_count > 0 else "[Complete]"
+                missing_flag = f"[MISSING: {missing_count}]" if missing_count > 0 else "[COMPLETE]"
+                
+                skew_hint = ""
+                if pd.api.types.is_numeric_dtype(df_clean[col]):
+                    try:
+                        skew = df_clean[col].skew()
+                        if abs(skew) > 1.5: skew_hint = "(Skewed)"
+                    except: pass
 
-            skew_hint = ""
-            if pd.api.types.is_numeric_dtype(df_clean[col]):
-                try:
-                    skew = df_clean[col].skew()
-                    if abs(skew) > 1.5: skew_hint = "(Highly Skewed)"
-                except: pass
+                col_stats.append(f"VAR: '{col}' | Type: {dtype} | Status: {missing_flag} {skew_hint} | Samples: {samples}")
 
-            stat_str = (
-                f"VAR: '{col}' | Type: {dtype} {skew_hint} | {missing_flag} | Samples: {samples}"
-            )
-            col_stats.append(stat_str)
-
-        return "\n".join(col_stats)
+            return "\n".join(col_stats)
+        except Exception as e:
+            safe_log(f"[Error] Profiling Failed: {e}")
+            return "Dataset Profile Error"
 
     # ============================================================
-    # PHASE 1: COMPREHENSIVE CLINICAL REPORT
+    # PHASE 1: CLINICAL REPORT
     # ============================================================
 
     def generate_executive_summary(self, df: pd.DataFrame) -> str:
-        print("\n--- Phase 1: Clinical Assessment ---", file=sys.stderr, flush=True)
+        safe_log("\n--- Phase 1: Clinical Assessment ---")
         profile = self.get_dataset_profile(df)
 
         prompt = f"""
@@ -151,7 +182,7 @@ TONE: Professional, Academic, and Medically Precise.
     # ============================================================
 
     def generate_detailed_strategy(self, df: pd.DataFrame, executive_summary: str) -> str:
-        print("\n--- Phase 2: Technical Strategy ---", file=sys.stderr, flush=True)
+        safe_log("\n--- Phase 2: Technical Strategy ---")
         profile = self.get_dataset_profile(df)
 
         prompt = f"""
@@ -167,6 +198,9 @@ AVAILABLE MODULES:
 - dp7: Encoding
 - dp8: Scaling
 - dp_drop: Drop Column
+- dp9: Normalization
+- dp10: PCA
+- dp5: Polynomial Features
 
 DATA PROFILE:
 {profile}
@@ -194,9 +228,7 @@ DATA PROFILE:
 OUTPUT FORMAT (Markdown):
 For each column, list the **Steps** and the **Biostatistical Reasoning**.
 """
-        response = ask_hf_llm(prompt, HF_MODEL_LOGIC, temperature=0.1)
-        if not response or len(response) < 50: return "## Fallback Strategy"
-        return response
+        return ask_hf_llm(prompt, HF_MODEL_LOGIC, temperature=0.1)
 
     # ============================================================
     # PHASE 3: JSON MAPPING & SANITIZATION
@@ -204,7 +236,7 @@ For each column, list the **Steps** and the **Biostatistical Reasoning**.
 
     def _robust_json_generation(self, prompt: str) -> Dict[str, Any]:
         for attempt in range(3):
-            if attempt > 0: print(f"   ⚠️ JSON Parse failed. Retrying...", file=sys.stderr)
+            if attempt > 0: safe_log(f"   [Retry] JSON Parse attempt {attempt+1}...")
             raw = ask_hf_llm(prompt, HF_MODEL_LOGIC, temperature=0.1)
             clean = clean_json_text(raw)
             try:
@@ -219,8 +251,12 @@ For each column, list the **Steps** and the **Biostatistical Reasoning**.
             if not isinstance(info, dict): continue
             
             raw_actions_list = info.get("actions", [])
-            if not raw_actions_list and isinstance(info.get("action"), str):
-                 raw_actions_list = [x.strip() for x in info.get("action").split(',')]
+            # Fix single string issue
+            if isinstance(raw_actions_list, str): raw_actions_list = [raw_actions_list]
+            
+            # Handle comma-separated strings inside list
+            if len(raw_actions_list) == 1 and "," in raw_actions_list[0]:
+                raw_actions_list = [x.strip() for x in raw_actions_list[0].split(",")]
 
             normalized_actions = []
             for raw_action in raw_actions_list:
@@ -267,37 +303,20 @@ For each column, list the **Steps** and the **Biostatistical Reasoning**.
 
     def _sanitize_plan_logic(self, df: pd.DataFrame, plan: Dict[str, Any]) -> Dict[str, Any]:
         """
-        HARD VALIDATION: Remove 'impute' if column has 0 missing values.
+        HARD VALIDATION: Remove 'impute' ONLY if column has 0 missing values AND it wasn't requested.
+        However, if the plan explicitly suggests imputation for logic reasons (e.g. outlier handling), 
+        we should be careful. 
+        [UPDATE]: Loosened strictness. If LLM says Impute, we allow it, as it might be a safety measure 
+        for future data or outliers treated as missing.
         """
-        missing_series = df.isnull().sum()
-        cols_with_missing = missing_series[missing_series > 0].index.tolist()
-
         sanitized_plan = {}
         for col, details in plan.items():
             if col not in df.columns: continue
-            
-            original_steps = details.get("steps", [])
-            cleaned_steps = []
-            
-            for step in original_steps:
-                if step['action'] == 'impute':
-                    if col in cols_with_missing:
-                        cleaned_steps.append(step)
-                    else:
-                        # Skip adding imputation if no missing data
-                        pass 
-                else:
-                    cleaned_steps.append(step)
-            
-            if cleaned_steps:
-                sanitized_plan[col] = {
-                    "steps": cleaned_steps,
-                    "reason": details.get("reason", "")
-                }
+            sanitized_plan[col] = details
         return sanitized_plan
 
     def generate_json_plan(self, df: pd.DataFrame, detailed_strategy: str) -> Dict[str, Any]:
-        print("\n--- Phase 3: JSON Configuration ---", file=sys.stderr, flush=True)
+        safe_log("\n--- Phase 3: JSON Configuration ---")
         profile = self.get_dataset_profile(df)
 
         prompt = f"""
@@ -359,4 +378,7 @@ if __name__ == "__main__":
             print("__JSON_RESULT_END__")
 
     except Exception as e:
-        print(f"❌ Execution Failed: {e}", file=sys.stderr)
+        safe_log(f"[Error] Execution Failed: {e}")
+        # Traceback is helpful for debugging 500 errors
+        traceback.print_exc(file=sys.stderr)
+        sys.exit(1)

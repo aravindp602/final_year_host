@@ -102,10 +102,10 @@ if impute_tasks:
             imputer = IterativeImputer(max_iter=10, random_state=0)
             df[numeric_cols] = imputer.fit_transform(df[numeric_cols])
         except Exception as e:
-            print(f"   ❌ MICE Imputation Failed: {e}")
+            print(f" MICE Imputation Failed: {e}")
     
     if non_numeric_cols:
-        print(f"   ⚠️ Skipped imputation for non-numeric columns (MICE requires numeric data): {non_numeric_cols}")
+        print(f" Skipped imputation for non-numeric columns (MICE requires numeric data): {non_numeric_cols}")
 
     save_log(df, step_counter, "imputed_data")
     step_counter += 1
@@ -120,7 +120,7 @@ if log_tasks:
             if (df[col] >= 0).all():
                 df[col] = np.log1p(df[col])
             else:
-                print(f"   ⚠️ Skipping Log on {col} (negative values found)")
+                print(f" Skipping Log on {col} (negative values found)")
     
     save_log(df, step_counter, "log_transformed")
     step_counter += 1
@@ -178,7 +178,7 @@ print("Final data sanitization...")
 # Drop any remaining object columns to ensure ML compatibility
 obj_cols = df.select_dtypes(include=['object']).columns
 if len(obj_cols) > 0:
-    print(f"   ⚠️ Dropping remaining non-numeric columns: {list(obj_cols)}")
+    print(f" Dropping remaining non-numeric columns: {list(obj_cols)}")
     df.drop(columns=obj_cols, inplace=True)
 
 df.replace([np.inf, -np.inf], np.nan, inplace=True)
@@ -187,6 +187,26 @@ df.fillna(0, inplace=True)
 try:
     df.to_csv(OUTPUT_PATH, index=False)
     print(f"Preprocessing done. Saved: {OUTPUT_PATH}")
+    
+    # [FIX] Force flush and print JSON result block for Node.js
+    sys.stdout.flush()
+    print("__JSON_RESULT_START__")
+    print(json.dumps({
+        "status": "success", 
+        "message": "Preprocessing completed successfully",
+        "output_path": OUTPUT_PATH
+    }))
+    print("__JSON_RESULT_END__")
+    sys.stdout.flush()
+    
 except Exception as e:
-    print(f"Error saving output: {e}")
+    # [FIX] Handle save errors gracefully
+    sys.stdout.flush()
+    print("__JSON_RESULT_START__")
+    print(json.dumps({
+        "status": "error",
+        "message": f"Error saving output: {str(e)}"
+    }))
+    print("__JSON_RESULT_END__")
+    sys.stdout.flush()
     sys.exit(1)

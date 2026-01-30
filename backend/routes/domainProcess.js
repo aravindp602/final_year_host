@@ -40,19 +40,27 @@ const generateGraphData = (plan) => {
     if (plan && typeof plan === 'object') {
         Object.values(plan).forEach(details => {
             if (details.steps) {
+                // New format: Array of steps
                 details.steps.forEach(step => actions.add(step.action));
             } else if (details.action) {
+                // Legacy format: Single action
                 actions.add(details.action);
             }
         });
     }
 
+    // [FIX] Complete Action Mapping for Graph Visualization
     const actionMapping = [
-        { key: 'drop', label: 'Drop Identifiers', id: 'dp_drop' },
-        { key: 'impute', label: 'Imputation', id: 'dp_impute' },
-        { key: 'log', label: 'Log Transform', id: 'dp_log' },
-        { key: 'encode', label: 'Encoding', id: 'dp_encode' },
-        { key: 'scale', label: 'Scaling', id: 'dp_scale' }
+        { key: 'remove_duplicates', label: 'Remove Duplicates', id: 'dp1' },
+        { key: 'impute', label: 'Handle Missing', id: 'dp2' },
+        { key: 'outlier', label: 'Outlier Removal', id: 'dp3' },
+        { key: 'polynomial', label: 'Poly Features', id: 'dp5' },
+        { key: 'log', label: 'Log Transform', id: 'dp6' },
+        { key: 'encode', label: 'Encoding', id: 'dp7' },
+        { key: 'scale', label: 'Scaling', id: 'dp8' },
+        { key: 'normalize', label: 'Normalization', id: 'dp9' },
+        { key: 'pca', label: 'PCA', id: 'dp10' },
+        { key: 'drop', label: 'Drop Columns', id: 'dp_drop' }
     ];
 
     actionMapping.forEach(step => {
@@ -83,84 +91,78 @@ const generateGraphData = (plan) => {
     return { nodes, edges };
 };
 
-const runPythonScript = (scriptPath, args) => {
+function runPythonScript(scriptPath, args = []) {
   return new Promise((resolve, reject) => {
-    const python = spawn(pythonExecutable, ["-u", scriptPath, ...args], { cwd: rootDir });
-    let output = "";
-    let errorOutput = "";
-    let isPrintingJson = false;
-
-    python.stdout.on("data", (data) => { 
-        const str = data.toString();
-        output += str;
-        
-        if (str.includes("__JSON_START__") || str.includes("__JSON_RESULT_START__")) {
-            isPrintingJson = true;
-            const parts = str.split(/__JSON_START__|__JSON_RESULT_START__/);
-            if (parts[0].trim()) process.stdout.write(parts[0]);
-        } 
-        else if (str.includes("__JSON_END__") || str.includes("__JSON_RESULT_END__")) {
-            isPrintingJson = false;
-            const parts = str.split(/__JSON_END__|__JSON_RESULT_END__/);
-            if (parts[1].trim()) process.stdout.write(parts[1]);
-        } 
-        else if (!isPrintingJson) {
-            process.stdout.write(str);
-        }
+    // Force UTF-8 environment to prevent emoji crashes on Windows
+    const python = spawn(pythonExecutable, ["-u", scriptPath, ...args], {
+        cwd: rootDir,
+        env: { ...process.env, PYTHONIOENCODING: 'utf-8' }
     });
 
-    python.stderr.on("data", (data) => { 
-        const str = data.toString();
-        errorOutput += str;
-        process.stdout.write(`[Py Log]: ${str}`); 
+    let stdout = "";
+    let stderr = "";
+
+    python.stdout.on("data", (data) => {
+      const str = data.toString();
+      stdout += str;
+    });
+
+    python.stderr.on("data", (data) => {
+      const str = data.toString();
+      stderr += str;
+      process.stdout.write(`[Py Log]: ${str}`);
     });
 
     python.on("close", (code) => {
-      if (code === 0) resolve(output);
-      else reject(new Error(errorOutput || `Script exited with code ${code}`));
+      // 1. Priority: JSON Result Block
+      const resultMatch = stdout.match(/__JSON_RESULT_START__([\s\S]*?)__JSON_RESULT_END__/);
+      if (resultMatch) {
+        try {
+          return resolve(JSON.parse(resultMatch[1].trim()));
+        } catch (err) {
+          console.error("JSON Parsing failed on result block:", err.message);
+        }
+      }
+
+      // 2. Fallback: Full Output (if success)
+      if (code === 0) return resolve(stdout);
+
+      // 3. Failure
+      reject(new Error(stderr || `Python exited with code ${code}`));
     });
   });
-};
+}
+
+// ---------------- ROUTES ----------------
 
 router.post("/generate-medical-plan", upload.single("dataset"), async (req, res) => {
-    if (!req.file) return res.status(400).json({ message: "No file" });
-    console.log("🤖 [Medical Plan] Starting generation for:", req.file.filename);
-  
-    try {
-        const output = await runPythonScript(
-            "preprocessing/Domain_based_preprocessing/medical_plan_generator.py",
-            [path.join(uploadDir, req.file.filename)]
-        );
-        
-        const match = output.match(/__JSON_RESULT_START__([\s\S]*?)__JSON_RESULT_END__/);
-        if (!match) throw new Error("Could not find JSON result");
-        
-        const result = JSON.parse(match[1]);
-        console.log("✅ [Medical Plan] Successfully generated.");
-        res.json(result);
+  if (!req.file) return res.status(400).json({ message: "No file" });
 
-    } catch (err) {
-        console.error("❌ [Medical Plan] Failed:", err.message);
-        res.status(500).json({ message: "Plan generation failed.", details: err.message });
-    }
+  console.log("🤖 [Medical Plan] Starting generation for:", req.file.filename);
+
+  try {
+    const result = await runPythonScript(
+      "preprocessing/Domain_based_preprocessing/medical_plan_generator.py",
+      [path.join(uploadDir, req.file.filename)]
+    );
+    console.log("✅ [Medical Plan] Successfully generated.");
+    res.json(result);
+  } catch (err) {
+    console.error("❌ [Medical Plan] Failed:", err.message);
+    res.status(500).json({ message: "Plan generation failed", details: err.message });
+  }
 });
 
 router.post("/regenerate-plan", upload.single("dataset"), async (req, res) => {
     if (!req.file || !req.body.report) return res.status(400).json({ message: "Invalid request" });
 
     try {
-        const output = await runPythonScript(
+        const result = await runPythonScript(
             "preprocessing/Domain_based_preprocessing/medical_plan_generator.py",
             [path.join(uploadDir, req.file.filename), "--regenerate", req.body.report]
         );
-
-        const match = output.match(/__JSON_RESULT_START__([\s\S]*?)__JSON_RESULT_END__/);
-        if (!match) throw new Error("Could not find JSON result");
-
-        const result = JSON.parse(match[1]);
         console.log("✅ [Medical Plan] Regenerated successfully.");
         res.json(result);
-
     } catch (err) {
         console.error("❌ [Regen Plan] Failed:", err.message);
         res.status(500).json({ message: "Plan regeneration failed.", details: err.message });
@@ -180,17 +182,19 @@ router.post("/execute-approved-plan", upload.single("dataset"), async (req, res)
     console.log(`\n🏥 Executing Medical Plan on ${branchName}...`);
   
     try {
+      // Step 1: Preprocessing
       await runPythonScript(
         "preprocessing/Domain_based_preprocessing/medical_plan_executor.py",
         [req.file.path, JSON.stringify(plan), preprocessedPath, logDirPath]
       );
       console.log(`   ✅ Preprocessing Complete.`);
 
-      const mList = ["m1"]; 
+      // Step 2: Training
       let trainingResults = [];
       let trainedModelPath = null;
       try {
           const allModels = loadJsonSafe("model_selectionAndTraining/model_names.json");
+          const mList = ["m1"]; 
           const selectedModels = allModels.filter(m => mList.includes(m.id));
           const payload = selectedModels.length > 0 ? selectedModels : [{ id: "m0", name: "AutoML", algo: "automl" }];
 
@@ -199,6 +203,7 @@ router.post("/execute-approved-plan", upload.single("dataset"), async (req, res)
             [preprocessedPath, JSON.stringify(payload)]
           );
 
+          // Legacy Parsing
           const jsonStart = output.indexOf("__JSON_START__");
           const jsonEnd = output.indexOf("__JSON_END__");
           if (jsonStart !== -1 && jsonEnd !== -1) {
@@ -206,8 +211,9 @@ router.post("/execute-approved-plan", upload.single("dataset"), async (req, res)
               if (trainingResults.length > 0) trainedModelPath = trainingResults[0].path;
           }
           console.log(`   ✅ Model Training Complete.`);
-      } catch (err) { throw new Error(`Model Training Failed: ${err.message}`); }
+      } catch (err) { console.error(`[Model Error] ${err.message}`); }
 
+      // Step 3: Output Generation
       let visualizationData = {};
       if (trainedModelPath) {
         try {
@@ -224,6 +230,7 @@ router.post("/execute-approved-plan", upload.single("dataset"), async (req, res)
         } catch (err) { console.error(`[Output Error] ${err.message}`); }
       }
 
+      // Step 4: Generate Graph
       const graphData = generateGraphData(plan);
 
       res.json({
