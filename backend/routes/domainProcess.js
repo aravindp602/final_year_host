@@ -189,10 +189,18 @@ router.post("/execute-approved-plan", upload.single("dataset"), async (req, res)
   
     const plan = JSON.parse(req.body.plan);
     const branchName = "main_branch";
-    const logDirPath = path.join(rootDir, "preprocessing", "Domain_based_preprocessing", `${branchName}_logging`);
     const preprocessedPath = path.join(rootDir, `${branchName}_processed.csv`);
+
+    // --- LOGGING DISABLED ---
+    // The following lines were creating the intermediate log folder.
+    // They are commented out to prevent saving intermediate CSV steps.
     
-    if (!fs.existsSync(logDirPath)) fs.mkdirSync(logDirPath, { recursive: true });
+    // const logDirPath = path.join(rootDir, "preprocessing", "Domain_based_preprocessing", `${branchName}_logging`);
+    // if (!fs.existsSync(logDirPath)) fs.mkdirSync(logDirPath, { recursive: true });
+
+    // We define an empty string or dummy path to satisfy the Python script argument requirement
+    const logDirPath = ""; 
+    // ------------------------
   
     console.log(`\n🏥 Executing Medical Plan on ${branchName}...`);
   
