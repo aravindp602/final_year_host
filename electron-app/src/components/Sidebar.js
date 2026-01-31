@@ -6,7 +6,7 @@ import Preprocessor from "./sidebar_components/Initial_Preprocessing/Preprocesso
 import PreprocessingOptions from "./sidebar_components/PreprocessingOptions/PreprocessingOptions";
 import ModelSelectionOptions from "./sidebar_components/ModelSelection/ModelSelectionOptions";
 import OutputOptions from "./sidebar_components/OutputOptions/OutputOptions";
-import AIPlanOverlay from "./sidebar_components/Initial_Preprocessing/AIPlanOverlay";
+import AIPlanOverlay from "./sidebar_components/AI_Plan/AIPlanOverlay";
 import { API_BASE_URL } from "../config";
 
 const Sidebar = ({
@@ -169,28 +169,42 @@ const Sidebar = ({
                 />
               )}
 
-              {/* View AI Plan Button */}
+              {/* View AI Plan Button - CUSTOMIZED */}
               {medicalPlan && (
                 <button
                   onClick={() => setIsPlanModalOpen(true)}
                   style={{
-                    width: '100%',
-                    marginTop: '15px',
-                    padding: '10px',
-                    backgroundColor: '#e7f1ff',
-                    border: '1px solid #007bff',
-                    color: '#007bff',
-                    borderRadius: '6px',
+                    width: '90%',
+                    margin: '8px auto 0',
+                    padding: '12px 16px',
+                    // Modern Blue Gradient
+                    background: 'linear-gradient(135deg, #3b82f6 0%, #2563eb 100%)',
+                    color: '#ffffff',
+                    border: 'none',
+                    borderRadius: '8px',
                     cursor: 'pointer',
-                    fontWeight: 'bold',
+                    fontSize: '13px',
+                    fontWeight: '700',
+                    // Soft blue shadow for depth
+                    boxShadow: '0 4px 10px rgba(37, 99, 235, 0.25)',
                     display: 'flex',
                     alignItems: 'center',
                     justifyContent: 'center',
-                    gap: '8px',
-                    transition: 'background 0.2s'
+                    gap: '10px',
+                    transition: 'transform 0.1s ease, box-shadow 0.2s ease',
+                    letterSpacing: '0.3px',
+                    textTransform: 'uppercase'
+                  }}
+                  onMouseEnter={(e) => {
+                    e.currentTarget.style.transform = 'translateY(-1px)';
+                    e.currentTarget.style.boxShadow = '0 6px 15px rgba(37, 99, 235, 0.35)';
+                  }}
+                  onMouseLeave={(e) => {
+                    e.currentTarget.style.transform = 'translateY(0)';
+                    e.currentTarget.style.boxShadow = '0 4px 10px rgba(37, 99, 235, 0.25)';
                   }}
                 >
-                  <span>📋</span> View Generated AI Plan
+                  <span style={{ fontSize: '16px' }}>✨</span> View AI Strategy
                 </button>
               )}
             </div>
@@ -230,7 +244,7 @@ const Sidebar = ({
             display: "flex",
             alignItems: "center",
             justifyContent: "center",
-            fontSize: "16px",
+            fontSize: "22px",
             fontWeight: "bold",
             color: "#555",
             zIndex: 60, // Above sidebar

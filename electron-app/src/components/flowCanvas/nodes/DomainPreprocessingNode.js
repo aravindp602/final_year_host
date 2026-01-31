@@ -17,7 +17,7 @@ const nodeStyle = {
 
 const DomainPreprocessingNode = ({ data }) => {
   // Default to Purple if no color is passed
-  const dynamicColor = data.color || "#b730cfff";
+  const dynamicColor = "#b730cfff";
 
   return (
     <div

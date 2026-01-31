@@ -65,7 +65,9 @@ export const useGraphEvents = ({
             let nodeType = n.type;
 
             // Detect Node Type (Normal vs Domain)
-            if (nodeType === 'preprocessingNode' || nodeType === 'preprocessing') {
+            if(n.type === 'domain') {
+              nodeType = 'domain';}
+            else if (nodeType === 'preprocessingNode' || nodeType === 'preprocessing') {
                 const baseId = n.data?.baseId || "";
                 if (baseId.toLowerCase().startsWith('dp')) {
                     nodeType = 'domain'; 

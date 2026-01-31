@@ -4,6 +4,10 @@ import FlowCanvas from './flowCanvas/FlowCanvas';
 import LoadingOverlay from './LoadingOverlay';
 import InstructionOverlay from './instruction_manual/InstructionOverlay';
 
+// 1. IMPORT YOUR LOGO HERE
+// Ensure the path matches where you saved your image
+import aceLogo from './assets/logo.png'; 
+
 const Dashboard = () => {
   // --- State Management ---
   const [file, setFile] = useState(null);
@@ -40,16 +44,11 @@ const Dashboard = () => {
       {/* HEADER */}
       <header style={styles.header}>
         <div style={styles.logoContainer}>
-          <div style={styles.logoIcon}>
-            <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-              <rect x="3" y="11" width="18" height="10" rx="2" />
-              <circle cx="12" cy="5" r="2" />
-              <path d="M12 7v4" />
-              <line x1="8" y1="16" x2="8" y2="16" />
-              <line x1="16" y1="16" x2="16" y2="16" />
-            </svg>
-          </div>
-          <span style={styles.logoText}>AutoML <span style={{ fontWeight: 300 }}>Tool</span></span>
+          
+          {/* 2. REPLACED SVG ICON WITH IMAGE TAG */}
+          <img src={aceLogo} alt="ACE Logo" style={styles.logoImage} />
+
+          <span style={styles.logoText}>ACE <span style={{ fontWeight: 300 }}>- Automated Clustering Elite</span></span>
         </div>
 
         {/* TOP RIGHT NAVIGATION */}
@@ -130,7 +129,7 @@ const styles = {
   },
 
   header: {
-    background: 'linear-gradient(135deg, #0f172a 0%, #1e293b 100%)', // Deep modern Navy
+    background: 'linear-gradient(135deg, #0f172a 0%, #1e293b 100%)',
     color: 'white',
     padding: '0 24px',
     height: '60px',
@@ -148,17 +147,15 @@ const styles = {
     gap: '12px',
   },
 
-  logoIcon: {
-    background: 'linear-gradient(135deg, #38bdf8 0%, #0ea5e9 100%)',
-    width: '32px',
-    height: '32px',
-    display: 'flex',
-    justifyContent: 'center',
-    alignItems: 'center',
-    borderRadius: '8px',
-    color: 'white',
-    boxShadow: '0 2px 4px rgba(0,0,0,0.2)',
+  // 3. UPDATED STYLE FOR IMAGE LOGO
+  logoImage: {
+    height: '32px', // Adjusts height to fit header
+    width: 'auto',  // Maintains aspect ratio
+    objectFit: 'contain',
+    display: 'block'
   },
+
+  // Removed old logoIcon style since it is replaced by logoImage
 
   logoText: {
     fontSize: '18px',
@@ -176,7 +173,7 @@ const styles = {
   segmentedControl: {
     display: 'flex',
     alignItems: 'center',
-    backgroundColor: 'rgba(255, 255, 255, 0.1)', // Subtle glass effect
+    backgroundColor: 'rgba(255, 255, 255, 0.1)',
     backdropFilter: 'blur(4px)',
     border: '1px solid rgba(255, 255, 255, 0.15)',
     borderRadius: '8px',

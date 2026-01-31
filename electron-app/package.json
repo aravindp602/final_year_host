@@ -5,7 +5,7 @@
   "main": "main.js",
   "scripts": {
     "start": "electron .",
-    "react-start": "PORT=3001 react-scripts start",
+    "react-start": "cross-env PORT=3001 react-scripts start",
     "dev": "concurrently \"npm run react-start\" \"npm start\"",
     "build": "react-scripts build",
     "test": "react-scripts test",
@@ -43,6 +43,7 @@
     "web-vitals": "^2.1.4"
   },
   "devDependencies": {
+    "cross-env": "^10.1.0",
     "electron-builder": "^26.0.12"
   },
   "eslintConfig": {

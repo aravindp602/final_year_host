@@ -8,6 +8,9 @@ const isOutput = (type) => ['output', 'outputNode'].includes(type);
 const isPreprocessing = (type) => 
   ['normal', 'domain', 'preprocessing', 'preprocessingNode', 'normalpreprocessingNode'].includes(type);
 
+// NEW: Helper to identify Domain nodes specifically
+const isDomain = (type) => type === 'domain';
+
 // --- Core Graph Utilities ---
 
 export const buildAdjacency = (edgeList) => {
@@ -95,6 +98,15 @@ export const validateConnection = (nodes, edges, connection) => {
   const targetAlreadyHasInput = edges.some(e => e.target === connection.target);
   if (targetAlreadyHasInput) {
       return "❌ Branches cannot merge! A node can only have one input.";
+  }
+
+  // --- RULE: PREVENT BRANCHING FROM DOMAIN NODES (Linearity) ---
+  // If the Source is a Domain node, it cannot have multiple outputs.
+  if (isDomain(sourceNode.type)) {
+    const sourceHasOutgoing = edges.some(e => e.source === connection.source);
+    if (sourceHasOutgoing) {
+      return "❌ Domain-specific pipelines must be linear. Branching is not allowed from Domain nodes.";
+    }
   }
 
   // Basic Validation

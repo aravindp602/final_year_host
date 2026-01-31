@@ -24,17 +24,20 @@ OUTPUT_PATH = sys.argv[3]
 LOG_DIR = sys.argv[4]
 
 # --- SETUP LOGGING DIRECTORY ---
-if os.path.exists(LOG_DIR):
-    try: shutil.rmtree(LOG_DIR)
-    except: pass
-os.makedirs(LOG_DIR, exist_ok=True)
-print(f"Logging intermediate steps to: {LOG_DIR}")
+# [LOGGING DISABLED]
+# if os.path.exists(LOG_DIR):
+#     try: shutil.rmtree(LOG_DIR)
+#     except: pass
+# os.makedirs(LOG_DIR, exist_ok=True)
+# print(f"Logging intermediate steps to: {LOG_DIR}")
 
 def save_log(df, step_num, step_name):
-    filename = f"{step_num}_{step_name.lower().replace(' ', '_')}.csv"
-    path = os.path.join(LOG_DIR, filename)
-    df.to_csv(path, index=False)
-    print(f"   --> Saved log: {filename}")
+    pass
+    # [LOGGING DISABLED]
+    # filename = f"{step_num}_{step_name.lower().replace(' ', '_')}.csv"
+    # path = os.path.join(LOG_DIR, filename)
+    # df.to_csv(path, index=False)
+    # print(f"   --> Saved log: {filename}")
 
 # --- LOAD DATA ---
 try:
@@ -222,25 +225,20 @@ pca_tasks = get_cols_with_action(["pca", "principal_component_analysis"], "dp10"
 if pca_tasks:
     print(f"Running PCA...")
     
-    # 1. Identify which columns to apply PCA to
-    # If explicit params exist, use those. If not, check if 'numeric' is implied.
-    # We will prioritize explicit columns found in pca_tasks.
     target_cols = [c[0] for c in pca_tasks if c[0] in df.columns]
     
-    # If no specific columns found (e.g., task was on dataset root), take all numeric
+    # If no specific columns found, take all numeric
     if not target_cols:
          target_cols = df.select_dtypes(include=[np.number]).columns.tolist()
 
     if target_cols:
         try:
-            # Determine n_components
-            n_components = 0.95 # Default
+            n_components = 0.95 
             for _, params in pca_tasks:
                 if 'n_components' in params:
                     n_components = params['n_components']
                     break
             
-            # Safety: Cannot have more components than features
             n_features = len(target_cols)
             if isinstance(n_components, int) and n_components > n_features:
                 n_components = n_features
@@ -248,17 +246,12 @@ if pca_tasks:
             pca = PCA(n_components=n_components)
             subset = df[target_cols]
             
-            # Fit Transform
             pca_data = pca.fit_transform(subset)
             
-            # Create PC columns
             pc_cols = [f"PC{i+1}" for i in range(pca_data.shape[1])]
             df_pca = pd.DataFrame(pca_data, columns=pc_cols, index=df.index)
             
-            # --- CRITICAL FIX: Don't replace the whole DF, just the transformed parts ---
-            # Drop the original columns used for PCA
             df = df.drop(columns=target_cols)
-            # Concatenate the new PC columns
             df = pd.concat([df, df_pca], axis=1)
             
             print(f"   -> PCA applied to {len(target_cols)} columns. Reduced to {df_pca.shape[1]} components.")

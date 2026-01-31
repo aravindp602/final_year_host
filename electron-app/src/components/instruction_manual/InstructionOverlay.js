@@ -192,6 +192,7 @@ const InstructionOverlay = ({ onClose }) => {
                   <li>1 Model Node</li>
                   <li>1 Output Node</li>
                 </ul>
+                3. No branches can be made for domain specific pipeline.
               </p>
 
             </div>
