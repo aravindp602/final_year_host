@@ -3,10 +3,12 @@ import os
 import json
 import pandas as pd
 import numpy as np
-from sklearn.preprocessing import StandardScaler, LabelEncoder
+from scipy import stats
+from sklearn.preprocessing import StandardScaler, LabelEncoder, MinMaxScaler, PolynomialFeatures
 # Explicitly enabling experimental MICE
 from sklearn.experimental import enable_iterative_imputer 
 from sklearn.impute import IterativeImputer
+from sklearn.decomposition import PCA
 import shutil
 
 # --- CONFIGURATION ---
@@ -46,23 +48,24 @@ except Exception as e:
 # ================================
 # HELPER: Extract Columns for Action
 # ================================
-def get_cols_with_action(action_keys):
-    """
-    Scans the plan's 'steps' to find columns that contain specific actions.
-    Returns a list of (column_name, parameters).
-    """
+def get_cols_with_action(action_keys, module_ids=None):
     if isinstance(action_keys, str): action_keys = [action_keys]
+    if isinstance(module_ids, str): module_ids = [module_ids]
+    if module_ids is None: module_ids = []
     
+    action_keys = [k.lower() for k in action_keys]
+    module_ids = [m.lower() for m in module_ids]
+
     cols = []
     for col, details in plan.items():
         if col not in df.columns: continue
         
-        # Check inside the 'steps' list
         steps = details.get("steps", [])
         for step in steps:
-            # We check both the raw 'action' key and the mapped 'moduleId'
             act = step.get("action", "").lower()
-            if act in action_keys:
+            mod = step.get("moduleId", "").lower()
+
+            if act in action_keys or mod in module_ids:
                 cols.append((col, step.get("params", {})))
                 
     return cols
@@ -72,8 +75,19 @@ def get_cols_with_action(action_keys):
 # ================================
 step_counter = 1
 
-# ---------------- 1. DROP COLUMNS ----------------
-drop_tasks = get_cols_with_action(["drop", "remove_duplicates", "drop_column"])
+# ---------------- 1. REMOVE DUPLICATES (dp1) ----------------
+dedup_tasks = get_cols_with_action(["remove_duplicates", "remove duplicates"], "dp1")
+if dedup_tasks or "remove_duplicates" in str(plan).lower(): 
+    print(f"Running Remove Duplicates...")
+    prev_len = len(df)
+    df.drop_duplicates(inplace=True)
+    curr_len = len(df)
+    print(f"   -> Removed {prev_len - curr_len} duplicate rows.")
+    save_log(df, step_counter, "removed_duplicates")
+    step_counter += 1
+
+# ---------------- 2. DROP COLUMNS (dp_drop) ----------------
+drop_tasks = get_cols_with_action(["drop", "drop_column", "drop column"], "dp_drop")
 cols_to_drop = list(set([c[0] for c in drop_tasks]))
 
 if cols_to_drop:
@@ -82,41 +96,70 @@ if cols_to_drop:
     save_log(df, step_counter, "dropped_cols")
     step_counter += 1
 
-# ---------------- 2. IMPUTATION (MICE ONLY) ----------------
-impute_tasks = get_cols_with_action(["impute", "handle_missing_values"])
+# ---------------- 3. IMPUTATION (dp2) ----------------
+impute_tasks = get_cols_with_action(["impute", "handle_missing_values", "handle missing values"], "dp2")
 if impute_tasks:
     print(f"Running Imputation (MICE Only) on {len(impute_tasks)} columns...")
-    
-    # Identify all columns targeted for imputation (ignoring specific params like 'mean'/'mode')
     cols_to_impute = list(set([c[0] for c in impute_tasks if c[0] in df.columns]))
-    
-    # Filter for Numeric Columns (MICE requirement)
     numeric_cols = [c for c in cols_to_impute if pd.api.types.is_numeric_dtype(df[c])]
-    non_numeric_cols = [c for c in cols_to_impute if c not in numeric_cols]
-
-    # Apply MICE (IterativeImputer)
+    
     if numeric_cols:
         try:
             print(f"   -> Applying Iterative Imputer to {len(numeric_cols)} numeric columns...")
-            # MICE: Multivariate Imputation by Chained Equations
             imputer = IterativeImputer(max_iter=10, random_state=0)
             df[numeric_cols] = imputer.fit_transform(df[numeric_cols])
         except Exception as e:
             print(f" MICE Imputation Failed: {e}")
     
-    if non_numeric_cols:
-        print(f" Skipped imputation for non-numeric columns (MICE requires numeric data): {non_numeric_cols}")
-
     save_log(df, step_counter, "imputed_data")
     step_counter += 1
 
-# ---------------- 3. LOG TRANSFORM ----------------
-log_tasks = get_cols_with_action(["log", "log_transform"])
+# ---------------- 4. OUTLIER REMOVAL (dp3) ----------------
+outlier_tasks = get_cols_with_action(["outlier_removal", "outlier removal", "remove_outliers"], "dp3")
+if outlier_tasks:
+    print(f"Running Outlier Removal (Z-Score) on specified columns...")
+    cols_to_check = list(set([c[0] for c in outlier_tasks if c[0] in df.columns and pd.api.types.is_numeric_dtype(df[c[0]])]))
+    
+    if cols_to_check:
+        prev_len = len(df)
+        z_scores = np.abs(stats.zscore(df[cols_to_check]))
+        df = df[(z_scores < 3).all(axis=1)]
+        curr_len = len(df)
+        print(f"   -> Removed {prev_len - curr_len} outlier rows.")
+        
+    save_log(df, step_counter, "outliers_removed")
+    step_counter += 1
+
+# ---------------- 5. POLYNOMIAL FEATURES (dp5) ----------------
+poly_tasks = get_cols_with_action(["polynomial_features", "polynomial features"], "dp5")
+if poly_tasks:
+    print(f"Running Polynomial Features generation...")
+    cols_to_poly = list(set([c[0] for c in poly_tasks if c[0] in df.columns and pd.api.types.is_numeric_dtype(df[c[0]])]))
+    
+    if cols_to_poly:
+        try:
+            poly = PolynomialFeatures(degree=2, include_bias=False)
+            poly_data = poly.fit_transform(df[cols_to_poly])
+            feature_names = poly.get_feature_names_out(cols_to_poly)
+            
+            poly_df = pd.DataFrame(poly_data, columns=feature_names, index=df.index)
+            
+            # Remove original columns and add new features
+            df = df.drop(columns=cols_to_poly)
+            df = pd.concat([df, poly_df], axis=1)
+            print(f"   -> Expanded {len(cols_to_poly)} columns into {len(feature_names)} polynomial features.")
+        except Exception as e:
+            print(f"Polynomial Features Failed: {e}")
+
+    save_log(df, step_counter, "polynomial_features")
+    step_counter += 1
+
+# ---------------- 6. LOG TRANSFORM (dp6) ----------------
+log_tasks = get_cols_with_action(["log", "log_transform", "log transform"], "dp6")
 if log_tasks:
     print(f"Running Log Transform on {len(log_tasks)} columns...")
     for col, _ in log_tasks:
-        if pd.api.types.is_numeric_dtype(df[col]):
-            # Use log1p to handle zeros safely
+        if col in df.columns and pd.api.types.is_numeric_dtype(df[col]):
             if (df[col] >= 0).all():
                 df[col] = np.log1p(df[col])
             else:
@@ -125,57 +168,109 @@ if log_tasks:
     save_log(df, step_counter, "log_transformed")
     step_counter += 1
 
-# ---------------- 4. ENCODING ----------------
-encode_tasks = get_cols_with_action(["encode", "encoding"])
+# ---------------- 7. ENCODING (dp7) ----------------
+encode_tasks = get_cols_with_action(["encode", "encoding"], "dp7")
 if encode_tasks:
     print(f"Running Encoding on {len(encode_tasks)} columns...")
     
     label_cols = [c for c, p in encode_tasks if p == 'label_encoder']
     onehot_cols = [c for c, p in encode_tasks if p == 'one_hot_encoder']
     
-    # Default fallback: Object -> OneHot, Int/Float (Ordinal) -> Label
     for c, p in encode_tasks:
-        if c not in label_cols and c not in onehot_cols:
+        if c not in label_cols and c not in onehot_cols and c in df.columns:
             if pd.api.types.is_object_dtype(df[c]): onehot_cols.append(c)
             else: label_cols.append(c)
 
-    # Label Encode
     if label_cols:
         le = LabelEncoder()
         for c in label_cols:
-            df[c] = le.fit_transform(df[c].astype(str))
+            if c in df.columns:
+                df[c] = le.fit_transform(df[c].astype(str))
 
-    # One Hot Encode
-    if onehot_cols:
-        df = pd.get_dummies(df, columns=onehot_cols, drop_first=True)
-        # Fix boolean columns from get_dummies
+    valid_oh_cols = [c for c in onehot_cols if c in df.columns]
+    if valid_oh_cols:
+        df = pd.get_dummies(df, columns=valid_oh_cols, drop_first=True)
         bool_cols = df.select_dtypes(include=['bool']).columns
         df[bool_cols] = df[bool_cols].astype(int)
 
     save_log(df, step_counter, "encoded_data")
     step_counter += 1
 
-# ---------------- 5. SCALING ----------------
-scale_tasks = get_cols_with_action(["scale", "scaling"])
+# ---------------- 8. SCALING (dp8) & NORMALIZATION (dp9) ----------------
+scale_tasks = get_cols_with_action(["scale", "scaling", "standard_scaler"], "dp8")
 if scale_tasks:
-    print(f"Running Scaling on {len(scale_tasks)} columns...")
-    
-    # Filter columns that still exist (some might be dropped or renamed by OHE)
-    valid_scale_cols = []
-    for c, _ in scale_tasks:
-        if c in df.columns and pd.api.types.is_numeric_dtype(df[c]):
-            valid_scale_cols.append(c)
-    
+    print(f"Running StandardScaler on {len(scale_tasks)} columns...")
+    valid_scale_cols = [c[0] for c in scale_tasks if c[0] in df.columns and pd.api.types.is_numeric_dtype(df[c[0]])]
     if valid_scale_cols:
         scaler = StandardScaler()
         df[valid_scale_cols] = scaler.fit_transform(df[valid_scale_cols])
-    
-    save_log(df, step_counter, "scaled_data")
+
+norm_tasks = get_cols_with_action(["normalization", "normalize", "minmax_scaler"], "dp9")
+if norm_tasks:
+    print(f"Running MinMaxScaler on {len(norm_tasks)} columns...")
+    valid_norm_cols = [c[0] for c in norm_tasks if c[0] in df.columns and pd.api.types.is_numeric_dtype(df[c[0]])]
+    if valid_norm_cols:
+        minmax = MinMaxScaler()
+        df[valid_norm_cols] = minmax.fit_transform(df[valid_norm_cols])
+
+if scale_tasks or norm_tasks:
+    save_log(df, step_counter, "scaled_normalized")
     step_counter += 1
+
+# ---------------- 9. PCA (dp10) ----------------
+pca_tasks = get_cols_with_action(["pca", "principal_component_analysis"], "dp10")
+if pca_tasks:
+    print(f"Running PCA...")
+    
+    # 1. Identify which columns to apply PCA to
+    # If explicit params exist, use those. If not, check if 'numeric' is implied.
+    # We will prioritize explicit columns found in pca_tasks.
+    target_cols = [c[0] for c in pca_tasks if c[0] in df.columns]
+    
+    # If no specific columns found (e.g., task was on dataset root), take all numeric
+    if not target_cols:
+         target_cols = df.select_dtypes(include=[np.number]).columns.tolist()
+
+    if target_cols:
+        try:
+            # Determine n_components
+            n_components = 0.95 # Default
+            for _, params in pca_tasks:
+                if 'n_components' in params:
+                    n_components = params['n_components']
+                    break
+            
+            # Safety: Cannot have more components than features
+            n_features = len(target_cols)
+            if isinstance(n_components, int) and n_components > n_features:
+                n_components = n_features
+            
+            pca = PCA(n_components=n_components)
+            subset = df[target_cols]
+            
+            # Fit Transform
+            pca_data = pca.fit_transform(subset)
+            
+            # Create PC columns
+            pc_cols = [f"PC{i+1}" for i in range(pca_data.shape[1])]
+            df_pca = pd.DataFrame(pca_data, columns=pc_cols, index=df.index)
+            
+            # --- CRITICAL FIX: Don't replace the whole DF, just the transformed parts ---
+            # Drop the original columns used for PCA
+            df = df.drop(columns=target_cols)
+            # Concatenate the new PC columns
+            df = pd.concat([df, df_pca], axis=1)
+            
+            print(f"   -> PCA applied to {len(target_cols)} columns. Reduced to {df_pca.shape[1]} components.")
+            print(f"   -> Dataset shape after PCA: {df.shape}")
+            
+            save_log(df, step_counter, "pca_applied")
+            step_counter += 1
+        except Exception as e:
+            print(f"PCA Failed: {e}")
 
 # ---------------- FINAL CLEANUP ----------------
 print("Final data sanitization...")
-# Drop any remaining object columns to ensure ML compatibility
 obj_cols = df.select_dtypes(include=['object']).columns
 if len(obj_cols) > 0:
     print(f" Dropping remaining non-numeric columns: {list(obj_cols)}")
@@ -184,11 +279,20 @@ if len(obj_cols) > 0:
 df.replace([np.inf, -np.inf], np.nan, inplace=True)
 df.fillna(0, inplace=True)
 
+# Final Check
+if df.empty or df.shape[1] == 0:
+    print("__JSON_RESULT_START__")
+    print(json.dumps({
+        "status": "error",
+        "message": "Preprocessing resulted in an empty dataset. Please check your drop/PCA settings."
+    }))
+    print("__JSON_RESULT_END__")
+    sys.exit(1)
+
 try:
     df.to_csv(OUTPUT_PATH, index=False)
     print(f"Preprocessing done. Saved: {OUTPUT_PATH}")
     
-    # [FIX] Force flush and print JSON result block for Node.js
     sys.stdout.flush()
     print("__JSON_RESULT_START__")
     print(json.dumps({
@@ -200,7 +304,6 @@ try:
     sys.stdout.flush()
     
 except Exception as e:
-    # [FIX] Handle save errors gracefully
     sys.stdout.flush()
     print("__JSON_RESULT_START__")
     print(json.dumps({

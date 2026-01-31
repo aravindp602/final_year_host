@@ -40,16 +40,13 @@ const generateGraphData = (plan) => {
     if (plan && typeof plan === 'object') {
         Object.values(plan).forEach(details => {
             if (details.steps) {
-                // New format: Array of steps
                 details.steps.forEach(step => actions.add(step.action));
             } else if (details.action) {
-                // Legacy format: Single action
                 actions.add(details.action);
             }
         });
     }
 
-    // [FIX] Complete Action Mapping for Graph Visualization
     const actionMapping = [
         { key: 'remove_duplicates', label: 'Remove Duplicates', id: 'dp1' },
         { key: 'impute', label: 'Handle Missing', id: 'dp2' },
@@ -76,7 +73,7 @@ const generateGraphData = (plan) => {
         }
     });
 
-    const defaultModelId = "m1"; 
+    const defaultModelId = "m0"; 
     const modelNodeId = `m_${defaultModelId}_${Date.now()}`;
     nodes.push({ id: modelNodeId, type: "modelNode", position: { x: xPos, y: 100 }, data: { label: "AutoML Search", baseId: defaultModelId } });
     edges.push({ id: `e-${lastNodeId}-${modelNodeId}`, source: lastNodeId, target: modelNodeId, animated: true });
@@ -91,9 +88,9 @@ const generateGraphData = (plan) => {
     return { nodes, edges };
 };
 
+// [FIX] Updated to stream logs (stdout) to terminal in real-time
 function runPythonScript(scriptPath, args = []) {
   return new Promise((resolve, reject) => {
-    // Force UTF-8 environment to prevent emoji crashes on Windows
     const python = spawn(pythonExecutable, ["-u", scriptPath, ...args], {
         cwd: rootDir,
         env: { ...process.env, PYTHONIOENCODING: 'utf-8' }
@@ -101,10 +98,26 @@ function runPythonScript(scriptPath, args = []) {
 
     let stdout = "";
     let stderr = "";
+    let isPrintingJson = false; // Flag to hide raw JSON blocks from terminal
 
     python.stdout.on("data", (data) => {
       const str = data.toString();
       stdout += str;
+
+      // Smart Log Streaming: Print everything EXCEPT the big JSON result blocks
+      if (str.includes("__JSON_START__") || str.includes("__JSON_RESULT_START__")) {
+          isPrintingJson = true;
+          const parts = str.split(/__JSON_START__|__JSON_RESULT_START__/);
+          if (parts[0].trim()) process.stdout.write(parts[0]);
+      } 
+      else if (str.includes("__JSON_END__") || str.includes("__JSON_RESULT_END__")) {
+          isPrintingJson = false;
+          const parts = str.split(/__JSON_END__|__JSON_RESULT_END__/);
+          if (parts[1] && parts[1].trim()) process.stdout.write(parts[1]);
+      } 
+      else if (!isPrintingJson) {
+          process.stdout.write(str); // Stream normal logs (e.g., Training progress)
+      }
     });
 
     python.stderr.on("data", (data) => {
@@ -115,7 +128,9 @@ function runPythonScript(scriptPath, args = []) {
 
     python.on("close", (code) => {
       // 1. Priority: JSON Result Block
-      const resultMatch = stdout.match(/__JSON_RESULT_START__([\s\S]*?)__JSON_RESULT_END__/);
+      const resultMatch = stdout.match(/__JSON_RESULT_START__([\s\S]*?)__JSON_RESULT_END__/) || 
+                          stdout.match(/__JSON_START__([\s\S]*?)__JSON_END__/);
+      
       if (resultMatch) {
         try {
           return resolve(JSON.parse(resultMatch[1].trim()));
@@ -194,21 +209,30 @@ router.post("/execute-approved-plan", upload.single("dataset"), async (req, res)
       let trainedModelPath = null;
       try {
           const allModels = loadJsonSafe("model_selectionAndTraining/model_names.json");
-          const mList = ["m1"]; 
+          const mList = ["m0"]; 
           const selectedModels = allModels.filter(m => mList.includes(m.id));
           const payload = selectedModels.length > 0 ? selectedModels : [{ id: "m0", name: "AutoML", algo: "automl" }];
 
-          const output = await runPythonScript(
+          // Run script (Logs will now appear in terminal)
+          const result = await runPythonScript(
             "model_selectionAndTraining/model_handler.py",
             [preprocessedPath, JSON.stringify(payload)]
           );
 
-          // Legacy Parsing
-          const jsonStart = output.indexOf("__JSON_START__");
-          const jsonEnd = output.indexOf("__JSON_END__");
-          if (jsonStart !== -1 && jsonEnd !== -1) {
-              trainingResults = JSON.parse(output.substring(jsonStart + 14, jsonEnd));
-              if (trainingResults.length > 0) trainedModelPath = trainingResults[0].path;
+          // If result is already parsed object (from runPythonScript priority 1)
+          if (typeof result === 'object') {
+              trainingResults = result;
+          } else if (typeof result === 'string') {
+              // Fallback parsing just in case
+              const jsonStart = result.indexOf("__JSON_START__");
+              const jsonEnd = result.indexOf("__JSON_END__");
+              if (jsonStart !== -1 && jsonEnd !== -1) {
+                  trainingResults = JSON.parse(result.substring(jsonStart + 14, jsonEnd));
+              }
+          }
+
+          if (trainingResults && trainingResults.length > 0) {
+              trainedModelPath = trainingResults[0].path;
           }
           console.log(`   ✅ Model Training Complete.`);
       } catch (err) { console.error(`[Model Error] ${err.message}`); }
@@ -217,14 +241,19 @@ router.post("/execute-approved-plan", upload.single("dataset"), async (req, res)
       let visualizationData = {};
       if (trainedModelPath) {
         try {
-          const output = await runPythonScript(
+          const result = await runPythonScript(
             "output_section/output_handler.py",
             [preprocessedPath, trainedModelPath, JSON.stringify(["o1"])]
           );
-          const jsonStart = output.indexOf("__JSON_START__");
-          const jsonEnd = output.indexOf("__JSON_END__");
-          if (jsonStart !== -1 && jsonEnd !== -1) {
-              visualizationData = JSON.parse(output.substring(jsonStart + 14, jsonEnd));
+          
+          if (typeof result === 'object') {
+              visualizationData = result;
+          } else if (typeof result === 'string') {
+              const jsonStart = result.indexOf("__JSON_START__");
+              const jsonEnd = result.indexOf("__JSON_END__");
+              if (jsonStart !== -1 && jsonEnd !== -1) {
+                  visualizationData = JSON.parse(result.substring(jsonStart + 14, jsonEnd));
+              }
           }
           console.log(`   ✅ Output Generation Complete.`);
         } catch (err) { console.error(`[Output Error] ${err.message}`); }

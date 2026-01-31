@@ -9,6 +9,6 @@
   { "id": "m7", "label": "Agglomerative (Hierarchical)", "name": "hierarchical", "type": "model" },
   { "id": "m8", "label": "MeanShift", "name": "meanshift", "type": "model" },
   { "id": "m9", "label": "Birch", "name": "birch", "type": "model" },
-  { "id": "m10", "label": "Affinity Propagation", "name": "affinity_propagation", "type": "model" },
-  { "id": "m11", "label": "Spectral Clustering", "name": "spectral", "type": "model" }
+  { "id": "m10", "label": "Affinity Propagation", "name": "affinity_propagation", "type": "model" }
+  
 ]
