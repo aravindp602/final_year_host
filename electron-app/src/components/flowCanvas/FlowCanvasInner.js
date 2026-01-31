@@ -1,315 +1,284 @@
 import React, { useState, useEffect, useCallback, useMemo } from "react";
 import ReactFlow, {
-    Background, Controls, MiniMap, applyNodeChanges, applyEdgeChanges, useReactFlow,
+  Background,
+  Controls,
+  MiniMap,
+  applyNodeChanges,
+  applyEdgeChanges,
+  useReactFlow,
 } from "reactflow";
 import "reactflow/dist/style.css";
 
-// Importing raw types to be memoized inside the component
-import nodeTypesRaw from "./nodeTypes"; 
+import nodeTypesRaw from "./nodeTypes";
 import { ResultsPanel } from "./ResultsPanel";
-import ErrorPopup from '../ErrorPopup';
+import ErrorPopup from "../ErrorPopup";
 
 import { useGraphEvents } from "./hooks/useGraphEvents";
 import { useGraphInteractions } from "./hooks/useGraphInteractions";
 import { usePipelineRunner } from "./hooks/usePipelineRunner";
-import { validatePipeline } from './graphValidation';
+import { validatePipeline } from "./graphValidation";
 
 const DATASET_NODE_ID = "dataset-node";
 
 const FlowCanvasInner = ({ file, domain, setGlobalLoading }) => {
-    // --- State Management ---
-    const [nodes, setNodes] = useState([]);
-    const [edges, setEdges] = useState([]);
-    const [localFile, setLocalFile] = useState(null);
-    const [results, setResults] = useState(null);
-    const [error, setError] = useState(null);
+  const [nodes, setNodes] = useState([]);
+  const [edges, setEdges] = useState([]);
+  const [localFile, setLocalFile] = useState(null);
+  const [results, setResults] = useState(null);
+  const [error, setError] = useState(null);
 
-    const [isResultsOpen, setIsResultsOpen] = useState(false);
-    const [mainBranchReady, setMainBranchReady] = useState(false);
+  const [isResultsOpen, setIsResultsOpen] = useState(false);
+  const [mainBranchReady, setMainBranchReady] = useState(false);
 
-    // Store mapping of HeadNodeID -> BranchNumber
-    const [branchMap, setBranchMap] = useState(new Map());
+  const [branchMap, setBranchMap] = useState(new Map());
 
-    const { fitView, project } = useReactFlow();
+  const { fitView, project } = useReactFlow();
 
-    // Optimization: Memoize nodeTypes to prevent ReactFlow re-renders
-    const nodeTypes = useMemo(() => nodeTypesRaw, []);
+  const nodeTypes = useMemo(() => nodeTypesRaw, []);
 
-    useEffect(() => {
-        if (results) setIsResultsOpen(true);
-    }, [results]);
+  useEffect(() => {
+    if (results) setIsResultsOpen(true);
+  }, [results]);
 
-    // --- SMART BRANCH LABELING & RECYCLING SYSTEM ---
-    useEffect(() => {
-        if (!mainBranchReady) return;
+  /* ---------------- Helpers ---------------- */
 
-        setNodes((currentNodes) => {
-            const nodeMap = new Map(currentNodes.map(n => [n.id, n]));
+  const childToParent = useCallback((childId, edgeList) => {
+    const edge = edgeList.find(e => e.target === childId);
+    return edge ? edge.source : null;
+  }, []);
 
-            // Build Tree Structure
-            const parentToChildren = {};
-            edges.forEach(e => {
-                if (!parentToChildren[e.source]) parentToChildren[e.source] = [];
-                parentToChildren[e.source].push(e.target);
-            });
+  const createLabelNode = useCallback((headNode, text, isMain) => ({
+    id: `label_${headNode.id}`,
+    type: "branchLabel",
+    position: { x: headNode.position.x, y: headNode.position.y - 40 },
+    data: { label: text },
+    draggable: false,
+    zIndex: 1001,
+    style: {
+      pointerEvents: "none",
+      width: 200,
+      textAlign: "center",
+      fontSize: "12px",
+      fontWeight: "bold",
+      color: isMain ? "#888" : "#666",
+    },
+  }), []);
 
-            // 1. Identify which nodes are "Heads" of a branch segment
-            const newBranchHeads = new Set();  // Nodes that start a NEW branch number
-            const continuationHeads = new Set(); // Nodes that continue an existing custom branch
+  /* ---------------- Branch Label Logic ---------------- */
 
-            // Helper: Recursive traverse to identify heads
-            const traverse = (nodeId, isMainBranch, currentCustomBranchId) => {
-                const children = parentToChildren[nodeId] || [];
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  useEffect(() => {
+    if (!mainBranchReady) return;
 
-                if (children.length === 0) return;
+    setNodes(currentNodes => {
+      const nodeMap = new Map(currentNodes.map(n => [n.id, n]));
 
-                // Scenario A: We are on Main Branch
-                if (isMainBranch) {
-                    children.forEach(childId => {
-                        const child = nodeMap.get(childId);
-                        if (child.data.isLocked) {
-                            // Still Main Branch
-                            traverse(childId, true, null);
-                        } else {
-                            // Deviation -> New Custom Branch
-                            newBranchHeads.add(childId);
-                            traverse(childId, false, childId);
-                        }
-                    });
-                }
-                // Scenario B: We are on a Custom Branch
-                else {
-                    if (children.length === 1) {
-                        // Straight line -> Continue current branch
-                        traverse(children[0], false, currentCustomBranchId);
-                    } else {
-                        // SPLIT detected on Custom Branch!
-                        
-                        // 1. Continuation (Lower Path) - Request a label here explicitly
-                        continuationHeads.add(children[0]);
-                        traverse(children[0], false, currentCustomBranchId);
+      const parentToChildren = {};
+      edges.forEach(e => {
+        if (!parentToChildren[e.source]) parentToChildren[e.source] = [];
+        parentToChildren[e.source].push(e.target);
+      });
 
-                        // 2. New Branches (Upper Path / Others)
-                        children.slice(1).forEach(childId => {
-                            newBranchHeads.add(childId);
-                            traverse(childId, false, childId);
-                        });
-                    }
-                }
-            };
+      const newBranchHeads = new Set();
+      const continuationHeads = new Set();
 
-            if (nodeMap.has(DATASET_NODE_ID)) {
-                traverse(DATASET_NODE_ID, true, null);
+      const traverse = (nodeId, isMain, currentBranchId) => {
+        const children = parentToChildren[nodeId] || [];
+        if (!children.length) return;
+
+        if (isMain) {
+          children.forEach(childId => {
+            const child = nodeMap.get(childId);
+            if (child?.data?.isLocked) {
+              traverse(childId, true, null);
+            } else {
+              newBranchHeads.add(childId);
+              traverse(childId, false, childId);
             }
+          });
+        } else {
+          if (children.length === 1) {
+            traverse(children[0], false, currentBranchId);
+          } else {
+            continuationHeads.add(children[0]);
+            traverse(children[0], false, currentBranchId);
 
-            // 2. Update Branch Number Map (Recycle Numbers)
-            setBranchMap(prevMap => {
-                const nextMap = new Map(prevMap);
-
-                // Clean up deleted nodes
-                for (const [id] of nextMap) {
-                    if (!nodeMap.has(id)) nextMap.delete(id);
-                }
-
-                // Get currently used numbers
-                const usedNumbers = new Set(nextMap.values());
-
-                // Assign numbers to NEW heads
-                newBranchHeads.forEach(headId => {
-                    if (!nextMap.has(headId)) {
-                        // Find lowest available number
-                        let num = 1;
-                        while (usedNumbers.has(num)) num++;
-
-                        nextMap.set(headId, num);
-                        usedNumbers.add(num);
-                    }
-                });
-
-                return nextMap;
+            children.slice(1).forEach(childId => {
+              newBranchHeads.add(childId);
+              traverse(childId, false, childId);
             });
-
-            // 3. Generate Label Nodes
-            const labels = [];
-            const mainHead = parentToChildren[DATASET_NODE_ID]?.find(id => nodeMap.get(id)?.data.isLocked);
-
-            // A. Main Branch Label
-            if (mainHead && nodeMap.has(mainHead)) {
-                labels.push(createLabelNode(nodeMap.get(mainHead), "MAIN BRANCH", true));
-            }
-
-            // B. New Branch Labels (from Map)
-            branchMap.forEach((num, headId) => {
-                if (nodeMap.has(headId)) {
-                    labels.push(createLabelNode(nodeMap.get(headId), `BRANCH ${num}`, false));
-                }
-            });
-
-            // C. Continuation Labels (The "Lower Branch" fix)
-            continuationHeads.forEach(nodeId => {
-                // Find upstream branch number
-                let curr = childToParent(nodeId, edges);
-                let foundNum = null;
-                while (curr && !foundNum) {
-                    if (branchMap.has(curr)) foundNum = branchMap.get(curr);
-                    else curr = childToParent(curr, edges);
-                    if (curr === DATASET_NODE_ID) break;
-                }
-
-                if (foundNum && nodeMap.has(nodeId)) {
-                    // Prevent duplicate labels if one already exists
-                    const existing = labels.find(l => l.id === `label_${nodeId}`);
-                    if (!existing) {
-                        labels.push(createLabelNode(nodeMap.get(nodeId), `BRANCH ${foundNum}`, false));
-                    }
-                }
-            });
-
-            const nonLabelNodes = currentNodes.filter(n => n.type !== 'branchLabel');
-            return [...nonLabelNodes, ...labels];
-        });
-
-    }, [edges, mainBranchReady, branchMap.size]); // Trigger on edge changes or branch count changes
-
-    // Helper to find parent (single input assumption checked in validation)
-    const childToParent = (childId, edgeList) => {
-        const edge = edgeList.find(e => e.target === childId);
-        return edge ? edge.source : null;
-    };
-
-    const createLabelNode = (headNode, text, isMain) => ({
-        id: `label_${headNode.id}`,
-        type: 'branchLabel',
-        position: { x: headNode.position.x, y: headNode.position.y - 40 },
-        data: { label: text },
-        draggable: false,
-        zIndex: 1001,
-        style: {
-            pointerEvents: 'none',
-            width: 200,
-            textAlign: 'center',
-            fontSize: '12px',
-            fontWeight: 'bold',
-            color: isMain ? '#888' : '#666'
+          }
         }
-    });
+      };
 
-    // --- NODE CHANGE HANDLER (Keep labels attached) ---
-    const onNodesChange = useCallback((changes) => {
-        setNodes((nds) => {
-            const updatedNodes = applyNodeChanges(changes, nds);
-            const movedNodeIds = new Set(
-                changes.filter(c => c.type === 'position' && c.dragging).map(c => c.id)
-            );
+      if (nodeMap.has(DATASET_NODE_ID)) {
+        traverse(DATASET_NODE_ID, true, null);
+      }
 
-            if (movedNodeIds.size === 0) return updatedNodes;
+      setBranchMap(prev => {
+        const next = new Map(prev);
 
-            return updatedNodes.map(node => {
-                if (node.type === 'branchLabel') {
-                    const headNodeId = node.id.replace('label_', '');
-                    if (movedNodeIds.has(headNodeId)) {
-                        const headNode = updatedNodes.find(n => n.id === headNodeId);
-                        if (headNode) {
-                            return {
-                                ...node,
-                                position: { x: headNode.position.x, y: headNode.position.y - 40 }
-                            };
-                        }
-                    }
-                }
-                return node;
-            });
+        for (const [id] of next) {
+          if (!nodeMap.has(id)) next.delete(id);
+        }
+
+        const used = new Set(next.values());
+
+        newBranchHeads.forEach(id => {
+          if (!next.has(id)) {
+            let num = 1;
+            while (used.has(num)) num++;
+            next.set(id, num);
+            used.add(num);
+          }
         });
-    }, [setNodes]);
 
-    // --- Hooks ---
-    useGraphEvents({ setNodes, setEdges, setLocalFile, setResults, setError, fitView, setMainBranchReady });
+        return next;
+      });
 
-    const { onDrop, onDragOver, onConnect } = useGraphInteractions({
-        file, domain, nodes, edges, project, setNodes, setEdges, setError, mainBranchReady
+      const labels = [];
+
+      const mainHead = parentToChildren[DATASET_NODE_ID]?.find(
+        id => nodeMap.get(id)?.data?.isLocked
+      );
+
+      if (mainHead && nodeMap.has(mainHead)) {
+        labels.push(createLabelNode(nodeMap.get(mainHead), "MAIN BRANCH", true));
+      }
+
+      branchMap.forEach((num, headId) => {
+        if (nodeMap.has(headId)) {
+          labels.push(createLabelNode(nodeMap.get(headId), `BRANCH ${num}`, false));
+        }
+      });
+
+      continuationHeads.forEach(nodeId => {
+        let curr = childToParent(nodeId, edges);
+        let foundNum = null;
+
+        while (curr && !foundNum) {
+          if (branchMap.has(curr)) foundNum = branchMap.get(curr);
+          curr = childToParent(curr, edges);
+          if (curr === DATASET_NODE_ID) break;
+        }
+
+        if (foundNum && nodeMap.has(nodeId)) {
+          if (!labels.find(l => l.id === `label_${nodeId}`)) {
+            labels.push(
+              createLabelNode(nodeMap.get(nodeId), `BRANCH ${foundNum}`, false)
+            );
+          }
+        }
+      });
+
+      const nonLabelNodes = currentNodes.filter(n => n.type !== "branchLabel");
+      return [...nonLabelNodes, ...labels];
     });
+  }, [edges, mainBranchReady, childToParent, createLabelNode]);
 
-    const { handleRunConfig } = usePipelineRunner({
-        localFile, nodes, edges, setResults, setError, setLoading: setGlobalLoading,
-        onValidate: () => validatePipeline(nodes, edges)
+  /* ---------------- Handlers ---------------- */
+
+  const onNodesChange = useCallback((changes) => {
+    setNodes(nds => {
+      const updated = applyNodeChanges(changes, nds);
+      const moved = new Set(
+        changes.filter(c => c.type === "position" && c.dragging).map(c => c.id)
+      );
+
+      if (!moved.size) return updated;
+
+      return updated.map(node => {
+        if (node.type === "branchLabel") {
+          const headId = node.id.replace("label_", "");
+          if (moved.has(headId)) {
+            const head = updated.find(n => n.id === headId);
+            if (head) {
+              return {
+                ...node,
+                position: { x: head.position.x, y: head.position.y - 40 },
+              };
+            }
+          }
+        }
+        return node;
+      });
     });
+  }, []);
 
-    const onEdgesChange = useCallback((changes) => setEdges((eds) => applyEdgeChanges(changes, eds)), [setEdges]);
+  const onEdgesChange = useCallback(
+    changes => setEdges(eds => applyEdgeChanges(changes, eds)),
+    []
+  );
 
-    const handleClearCanvas = useCallback(() => {
-        const datasetNode = nodes.find(n => n.id === DATASET_NODE_ID);
-        setBranchMap(new Map()); // Reset branch counters
-        setNodes(datasetNode ? [datasetNode] : []);
-        setEdges([]);
-        setResults(null);
-        setIsResultsOpen(false);
-        setMainBranchReady(false);
-    }, [nodes]);
+  const handleClearCanvas = useCallback(() => {
+    const datasetNode = nodes.find(n => n.id === DATASET_NODE_ID);
+    setBranchMap(new Map());
+    setNodes(datasetNode ? [datasetNode] : []);
+    setEdges([]);
+    setResults(null);
+    setIsResultsOpen(false);
+    setMainBranchReady(false);
+  }, [nodes]);
 
-    return (
-        <div style={{ flex: 1, position: "relative", display: "flex", flexDirection: "column", height: "100%" }}>
-            {error && <ErrorPopup message={error} onClose={() => setError(null)} />}
+  /* ---------------- Hooks ---------------- */
 
-            <div style={{ flex: 1, position: "relative" }} onDrop={onDrop} onDragOver={onDragOver}>
+  useGraphEvents({
+    setNodes,
+    setEdges,
+    setLocalFile,
+    setResults,
+    setError,
+    fitView,
+    setMainBranchReady,
+  });
 
-                {results && !isResultsOpen && (
-                    <button
-                        onClick={() => setIsResultsOpen(true)}
-                        style={{
-                            position: "absolute", top: 10, right: 330, zIndex: 10,
-                            padding: "8px 16px", background: "#17a2b8", color: "white",
-                            border: "none", borderRadius: 6, cursor: "pointer",
-                            boxShadow: "0 2px 5px rgba(0,0,0,0.2)", fontWeight: "bold"
-                        }}
-                    >
-                        View Results 📊
-                    </button>
-                )}
+  const { onDrop, onDragOver, onConnect } = useGraphInteractions({
+    file,
+    domain,
+    nodes,
+    edges,
+    project,
+    setNodes,
+    setEdges,
+    setError,
+    mainBranchReady,
+  });
 
-                <button
-                    onClick={handleClearCanvas}
-                    style={{
-                        position: "absolute", top: 10, right: 180, zIndex: 10,
-                        padding: "8px 16px", background: "#6c757d", color: "white",
-                        border: "none", borderRadius: 6, cursor: "pointer",
-                        boxShadow: "0 2px 5px rgba(0,0,0,0.2)"
-                    }}
-                >
-                    Clear Canvas
-                </button>
+  const { handleRunConfig } = usePipelineRunner({
+    localFile,
+    nodes,
+    edges,
+    setResults,
+    setError,
+    setLoading: setGlobalLoading,
+    onValidate: () => validatePipeline(nodes, edges),
+  });
 
-                <button
-                    onClick={handleRunConfig}
-                    style={{
-                        position: "absolute", top: 10, right: 10, zIndex: 10,
-                        padding: "8px 16px", background: "#e20606ff", color: "white",
-                        border: "none", borderRadius: 6, cursor: "pointer",
-                        boxShadow: "0 2px 5px rgba(0,0,0,0.2)"
-                    }}
-                >
-                    Run Configuration
-                </button>
+  return (
+    <div style={{ flex: 1, display: "flex", flexDirection: "column", height: "100%" }}>
+      {error && <ErrorPopup message={error} onClose={() => setError(null)} />}
 
-                <ReactFlow
-                    nodes={nodes}
-                    edges={edges}
-                    onNodesChange={onNodesChange}
-                    onEdgesChange={onEdgesChange}
-                    onConnect={onConnect}
-                    nodeTypes={nodeTypes} // Passed memoized nodeTypes
-                    fitView
-                >
-                    <MiniMap />
-                    <Background />
-                    <Controls />
-                </ReactFlow>
+      <div style={{ flex: 1 }} onDrop={onDrop} onDragOver={onDragOver}>
+        <ReactFlow
+          nodes={nodes}
+          edges={edges}
+          onNodesChange={onNodesChange}
+          onEdgesChange={onEdgesChange}
+          onConnect={onConnect}
+          nodeTypes={nodeTypes}
+          fitView
+        >
+          <MiniMap />
+          <Background />
+          <Controls />
+        </ReactFlow>
 
-                {isResultsOpen && results && (
-                    <ResultsPanel data={results} onClose={() => setIsResultsOpen(false)} />
-                )}
-            </div>
-        </div>
-    );
+        {isResultsOpen && results && (
+          <ResultsPanel data={results} onClose={() => setIsResultsOpen(false)} />
+        )}
+      </div>
+    </div>
+  );
 };
 
 export default FlowCanvasInner;

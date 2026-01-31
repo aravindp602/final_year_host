@@ -4,15 +4,11 @@ import ErrorPopup from "../../ErrorPopup";
 import { API_BASE_URL } from "../../../config";
 
 const DomainDetector = ({ file, onDomainDetected, setLoading }) => {
-  const [geminiDomain, setGeminiDomain] = useState(null);
-  const [groqDomain, setGroqDomain] = useState(null);
   const [finalDomain, setFinalDomain] = useState(null);
   const [error, setError] = useState(null);
 
   // Reset state when a new file is uploaded
   useEffect(() => {
-    setGeminiDomain(null);
-    setGroqDomain(null);
     setFinalDomain(null);
     setError(null);
   }, [file]);
@@ -35,26 +31,20 @@ const DomainDetector = ({ file, onDomainDetected, setLoading }) => {
       const res = await axios.post(
         `${API_BASE_URL}/find-domain`,
         formData,
-        { validateStatus: () => true } // 👈 prevent axios auto-throw
+        { validateStatus: () => true } // prevent axios auto-throw
       );
 
       console.log("📦 Backend response:", res.status, res.data);
 
-      // Explicit status handling
       if (res.status !== 200) {
         throw new Error(res.data?.error || "Domain detection failed");
       }
 
       const {
-        gemini_domain,
-        groq_domain,
         final_domain = res.data.domain, // backward compatibility
       } = res.data;
 
-      setGeminiDomain(gemini_domain || null);
-      setGroqDomain(groq_domain || null);
       setFinalDomain(final_domain || null);
-
       onDomainDetected(final_domain);
 
     } catch (err) {
@@ -90,7 +80,6 @@ const DomainDetector = ({ file, onDomainDetected, setLoading }) => {
         Find Domain
       </button>
 
-      {/* ----- RESULT UI ----- */}
       {finalDomain && (
         <div
           style={{
@@ -101,16 +90,9 @@ const DomainDetector = ({ file, onDomainDetected, setLoading }) => {
             fontSize: "14px",
           }}
         >
-          {/* {geminiDomain && (
-            <p><strong>Gemini Prediction:</strong> {geminiDomain}</p>
-          )}
-          {groqDomain && (
-            <p><strong>Groq Prediction:</strong> {groqDomain}</p>
-          )}
-
-          {(geminiDomain || groqDomain) && <hr />} */}
-
-          <p><strong>Final Domain:</strong> {finalDomain}</p>
+          <p>
+            <strong>Final Domain:</strong> {finalDomain}
+          </p>
         </div>
       )}
     </div>

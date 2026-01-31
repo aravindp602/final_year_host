@@ -1,5 +1,4 @@
 import React, { useEffect, useState } from "react";
-import axios from "axios";
 import FileUploader from "./sidebar_components/Initial_Preprocessing/FileUploader";
 import DomainDetector from "./sidebar_components/Initial_Preprocessing/DomainDetector";
 import Preprocessor from "./sidebar_components/Initial_Preprocessing/Preprocessor";
