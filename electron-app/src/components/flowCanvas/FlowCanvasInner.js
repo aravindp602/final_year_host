@@ -1,4 +1,10 @@
-import React, { useState, useEffect, useCallback, useMemo } from "react";
+import React, {
+  useState,
+  useEffect,
+  useCallback,
+  useMemo,
+  useRef,
+} from "react";
 import ReactFlow, {
   Background,
   Controls,
@@ -31,10 +37,15 @@ const FlowCanvasInner = ({ file, domain, setGlobalLoading }) => {
   const [mainBranchReady, setMainBranchReady] = useState(false);
 
   const [branchMap, setBranchMap] = useState(new Map());
+  const branchMapRef = useRef(branchMap);
 
   const { fitView, project } = useReactFlow();
-
   const nodeTypes = useMemo(() => nodeTypesRaw, []);
+
+  /* ---------- keep ref in sync ---------- */
+  useEffect(() => {
+    branchMapRef.current = branchMap;
+  }, [branchMap]);
 
   useEffect(() => {
     if (results) setIsResultsOpen(true);
@@ -43,7 +54,7 @@ const FlowCanvasInner = ({ file, domain, setGlobalLoading }) => {
   /* ---------------- Helpers ---------------- */
 
   const childToParent = useCallback((childId, edgeList) => {
-    const edge = edgeList.find(e => e.target === childId);
+    const edge = edgeList.find((e) => e.target === childId);
     return edge ? edge.source : null;
   }, []);
 
@@ -66,15 +77,14 @@ const FlowCanvasInner = ({ file, domain, setGlobalLoading }) => {
 
   /* ---------------- Branch Label Logic ---------------- */
 
-  // eslint-disable-next-line react-hooks/exhaustive-deps
   useEffect(() => {
     if (!mainBranchReady) return;
 
-    setNodes(currentNodes => {
-      const nodeMap = new Map(currentNodes.map(n => [n.id, n]));
+    setNodes((currentNodes) => {
+      const nodeMap = new Map(currentNodes.map((n) => [n.id, n]));
 
       const parentToChildren = {};
-      edges.forEach(e => {
+      edges.forEach((e) => {
         if (!parentToChildren[e.source]) parentToChildren[e.source] = [];
         parentToChildren[e.source].push(e.target);
       });
@@ -87,7 +97,7 @@ const FlowCanvasInner = ({ file, domain, setGlobalLoading }) => {
         if (!children.length) return;
 
         if (isMain) {
-          children.forEach(childId => {
+          children.forEach((childId) => {
             const child = nodeMap.get(childId);
             if (child?.data?.isLocked) {
               traverse(childId, true);
@@ -102,7 +112,7 @@ const FlowCanvasInner = ({ file, domain, setGlobalLoading }) => {
           } else {
             continuationHeads.add(children[0]);
             traverse(children[0], false);
-            children.slice(1).forEach(id => {
+            children.slice(1).forEach((id) => {
               newBranchHeads.add(id);
               traverse(id, false);
             });
@@ -114,14 +124,15 @@ const FlowCanvasInner = ({ file, domain, setGlobalLoading }) => {
         traverse(DATASET_NODE_ID, true);
       }
 
-      setBranchMap(prev => {
+      setBranchMap((prev) => {
         const next = new Map(prev);
+
         for (const [id] of next) {
           if (!nodeMap.has(id)) next.delete(id);
         }
 
         const used = new Set(next.values());
-        newBranchHeads.forEach(id => {
+        newBranchHeads.forEach((id) => {
           if (!next.has(id)) {
             let num = 1;
             while (used.has(num)) num++;
@@ -129,45 +140,49 @@ const FlowCanvasInner = ({ file, domain, setGlobalLoading }) => {
             used.add(num);
           }
         });
+
         return next;
       });
 
       const labels = [];
+      const currentMap = branchMapRef.current;
 
       const mainHead = parentToChildren[DATASET_NODE_ID]?.find(
-        id => nodeMap.get(id)?.data?.isLocked
+        (id) => nodeMap.get(id)?.data?.isLocked
       );
 
       if (mainHead && nodeMap.has(mainHead)) {
         labels.push(createLabelNode(nodeMap.get(mainHead), "MAIN BRANCH", true));
       }
 
-      branchMap.forEach((num, headId) => {
+      currentMap.forEach((num, headId) => {
         if (nodeMap.has(headId)) {
-          labels.push(createLabelNode(nodeMap.get(headId), `BRANCH ${num}`, false));
+          labels.push(
+            createLabelNode(nodeMap.get(headId), `BRANCH ${num}`, false)
+          );
         }
       });
 
-      continuationHeads.forEach(nodeId => {
+      continuationHeads.forEach((nodeId) => {
         let curr = childToParent(nodeId, edges);
         let foundNum = null;
 
         while (curr && !foundNum) {
-          if (branchMap.has(curr)) foundNum = branchMap.get(curr);
+          if (currentMap.has(curr)) foundNum = currentMap.get(curr);
           curr = childToParent(curr, edges);
           if (curr === DATASET_NODE_ID) break;
         }
 
         if (foundNum && nodeMap.has(nodeId)) {
-          if (!labels.find(l => l.id === `label_${nodeId}`)) {
-            labels.push(
-              createLabelNode(nodeMap.get(nodeId), `BRANCH ${foundNum}`, false)
-            );
-          }
+          labels.push(
+            createLabelNode(nodeMap.get(nodeId), `BRANCH ${foundNum}`, false)
+          );
         }
       });
 
-      const nonLabelNodes = currentNodes.filter(n => n.type !== "branchLabel");
+      const nonLabelNodes = currentNodes.filter(
+        (n) => n.type !== "branchLabel"
+      );
       return [...nonLabelNodes, ...labels];
     });
   }, [edges, mainBranchReady, childToParent, createLabelNode]);
@@ -175,19 +190,21 @@ const FlowCanvasInner = ({ file, domain, setGlobalLoading }) => {
   /* ---------------- Handlers ---------------- */
 
   const onNodesChange = useCallback((changes) => {
-    setNodes(nds => {
+    setNodes((nds) => {
       const updated = applyNodeChanges(changes, nds);
       const moved = new Set(
-        changes.filter(c => c.type === "position" && c.dragging).map(c => c.id)
+        changes
+          .filter((c) => c.type === "position" && c.dragging)
+          .map((c) => c.id)
       );
 
       if (!moved.size) return updated;
 
-      return updated.map(node => {
+      return updated.map((node) => {
         if (node.type === "branchLabel") {
           const headId = node.id.replace("label_", "");
           if (moved.has(headId)) {
-            const head = updated.find(n => n.id === headId);
+            const head = updated.find((n) => n.id === headId);
             if (head) {
               return {
                 ...node,
@@ -202,7 +219,7 @@ const FlowCanvasInner = ({ file, domain, setGlobalLoading }) => {
   }, []);
 
   const onEdgesChange = useCallback(
-    changes => setEdges(eds => applyEdgeChanges(changes, eds)),
+    (changes) => setEdges((eds) => applyEdgeChanges(changes, eds)),
     []
   );
 
@@ -259,7 +276,10 @@ const FlowCanvasInner = ({ file, domain, setGlobalLoading }) => {
         </ReactFlow>
 
         {isResultsOpen && results && (
-          <ResultsPanel data={results} onClose={() => setIsResultsOpen(false)} />
+          <ResultsPanel
+            data={results}
+            onClose={() => setIsResultsOpen(false)}
+          />
         )}
       </div>
     </div>
