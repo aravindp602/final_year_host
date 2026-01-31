@@ -3,22 +3,34 @@ import { addEdge } from 'reactflow';
 import { validateConnection } from "../graphValidation";
 
 export const useGraphInteractions = ({ 
-    file, domain, nodes, edges, project, setNodes, setEdges, setError, mainBranchReady 
+  file,
+  nodes,
+  edges,
+  project,
+  setNodes,
+  setEdges,
+  setError,
+  mainBranchReady
 }) => {
 
   const onDrop = useCallback(
     (event) => {
       event.preventDefault();
 
-      if (!file) return setError("Please upload a dataset first.");
+      if (!file) {
+        setError("Please upload a dataset first.");
+        return;
+      }
       
-      // --- NEW LOCK CHECK ---
+      // --- LOCK CHECK ---
       if (!mainBranchReady) {
-        return setError("⚠️ Main Branch not found! Please run Normal/Domain preprocessing first.");
+        setError("⚠️ Main Branch not found! Please run Normal/Domain preprocessing first.");
+        return;
       }
 
       const container = document.querySelector(".react-flow__renderer")?.parentElement;
       if (!container) return;
+
       const bounds = container.getBoundingClientRect();
       const raw = event.dataTransfer.getData("application/reactflow");
       if (!raw) return;
@@ -33,7 +45,7 @@ export const useGraphInteractions = ({
         dragged.type === "model" ? "modelNode"
         : dragged.type === "preprocessing" ? "preprocessingNode"
         : dragged.type === "output" ? "outputNode"
-        : dragged.type; // 'normal', 'domain'
+        : dragged.type;
 
       const newNodeId = `${dragged.id}_${Date.now()}`;
       
@@ -45,32 +57,43 @@ export const useGraphInteractions = ({
           label: dragged.label,
           baseId: dragged.id,
           color: dragged.color,
-          // New branches are editable
           onDelete: () => {
-            setNodes((nds) => nds.filter((n) => n.id !== newNodeId));
-            setEdges((eds) => eds.filter((e) => e.source !== newNodeId && e.target !== newNodeId));
+            setNodes(nds => nds.filter(n => n.id !== newNodeId));
+            setEdges(eds =>
+              eds.filter(e => e.source !== newNodeId && e.target !== newNodeId)
+            );
           },
         },
       };
-      setNodes((nds) => [...nds, newNode]);
+
+      setNodes(nds => [...nds, newNode]);
     },
-    [project, file, domain, setNodes, setEdges, setError, mainBranchReady]
+    [project, file, setNodes, setEdges, setError, mainBranchReady]
   );
 
-  const onDragOver = useCallback((e) => e.preventDefault(), []);
+  const onDragOver = useCallback(
+    (e) => e.preventDefault(),
+    []
+  );
 
   const onConnect = useCallback(
     (params) => {
       const errorMessage = validateConnection(nodes, edges, params);
-      if (errorMessage) return setError(errorMessage);
+      if (errorMessage) {
+        setError(errorMessage);
+        return;
+      }
 
-      setEdges((eds) =>
-        addEdge({ 
-            ...params, 
-            animated: true, 
-            markerEnd: { type: "arrowclosed" }, 
-            style: { stroke: "#000", strokeWidth: 3 } 
-        }, eds)
+      setEdges(eds =>
+        addEdge(
+          { 
+            ...params,
+            animated: true,
+            markerEnd: { type: "arrowclosed" },
+            style: { stroke: "#000", strokeWidth: 3 }
+          },
+          eds
+        )
       );
     },
     [edges, nodes, setEdges, setError]

@@ -82,7 +82,7 @@ const FlowCanvasInner = ({ file, domain, setGlobalLoading }) => {
       const newBranchHeads = new Set();
       const continuationHeads = new Set();
 
-      const traverse = (nodeId, isMain, currentBranchId) => {
+      const traverse = (nodeId, isMain) => {
         const children = parentToChildren[nodeId] || [];
         if (!children.length) return;
 
@@ -90,40 +90,37 @@ const FlowCanvasInner = ({ file, domain, setGlobalLoading }) => {
           children.forEach(childId => {
             const child = nodeMap.get(childId);
             if (child?.data?.isLocked) {
-              traverse(childId, true, null);
+              traverse(childId, true);
             } else {
               newBranchHeads.add(childId);
-              traverse(childId, false, childId);
+              traverse(childId, false);
             }
           });
         } else {
           if (children.length === 1) {
-            traverse(children[0], false, currentBranchId);
+            traverse(children[0], false);
           } else {
             continuationHeads.add(children[0]);
-            traverse(children[0], false, currentBranchId);
-
-            children.slice(1).forEach(childId => {
-              newBranchHeads.add(childId);
-              traverse(childId, false, childId);
+            traverse(children[0], false);
+            children.slice(1).forEach(id => {
+              newBranchHeads.add(id);
+              traverse(id, false);
             });
           }
         }
       };
 
       if (nodeMap.has(DATASET_NODE_ID)) {
-        traverse(DATASET_NODE_ID, true, null);
+        traverse(DATASET_NODE_ID, true);
       }
 
       setBranchMap(prev => {
         const next = new Map(prev);
-
         for (const [id] of next) {
           if (!nodeMap.has(id)) next.delete(id);
         }
 
         const used = new Set(next.values());
-
         newBranchHeads.forEach(id => {
           if (!next.has(id)) {
             let num = 1;
@@ -132,7 +129,6 @@ const FlowCanvasInner = ({ file, domain, setGlobalLoading }) => {
             used.add(num);
           }
         });
-
         return next;
       });
 
@@ -210,16 +206,6 @@ const FlowCanvasInner = ({ file, domain, setGlobalLoading }) => {
     []
   );
 
-  const handleClearCanvas = useCallback(() => {
-    const datasetNode = nodes.find(n => n.id === DATASET_NODE_ID);
-    setBranchMap(new Map());
-    setNodes(datasetNode ? [datasetNode] : []);
-    setEdges([]);
-    setResults(null);
-    setIsResultsOpen(false);
-    setMainBranchReady(false);
-  }, [nodes]);
-
   /* ---------------- Hooks ---------------- */
 
   useGraphEvents({
@@ -234,7 +220,6 @@ const FlowCanvasInner = ({ file, domain, setGlobalLoading }) => {
 
   const { onDrop, onDragOver, onConnect } = useGraphInteractions({
     file,
-    domain,
     nodes,
     edges,
     project,
@@ -244,7 +229,7 @@ const FlowCanvasInner = ({ file, domain, setGlobalLoading }) => {
     mainBranchReady,
   });
 
-  const { handleRunConfig } = usePipelineRunner({
+  usePipelineRunner({
     localFile,
     nodes,
     edges,
