@@ -1,3 +1,19 @@
 // electron-app/src/config.js
-export const API_BASE_URL = "/api";
 
+const isBrowser = typeof window !== "undefined";
+
+const isLocal =
+  isBrowser &&
+  (window.location.hostname === "localhost" ||
+    window.location.hostname === "127.0.0.1");
+
+/**
+ * Local:
+ *   React (localhost:3000 / 3001) → Backend (localhost:5001)
+ *
+ * Production (Vercel):
+ *   https://automltool.vercel.app → /api → AWS backend (via vercel.json rewrite)
+ */
+export const API_BASE_URL = isLocal
+  ? "http://localhost:5001"
+  : "/api";

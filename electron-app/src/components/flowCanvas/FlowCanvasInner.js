@@ -58,22 +58,25 @@ const FlowCanvasInner = ({ file, domain, setGlobalLoading }) => {
     return edge ? edge.source : null;
   }, []);
 
-  const createLabelNode = useCallback((headNode, text, isMain) => ({
-    id: `label_${headNode.id}`,
-    type: "branchLabel",
-    position: { x: headNode.position.x, y: headNode.position.y - 40 },
-    data: { label: text },
-    draggable: false,
-    zIndex: 1001,
-    style: {
-      pointerEvents: "none",
-      width: 200,
-      textAlign: "center",
-      fontSize: "12px",
-      fontWeight: "bold",
-      color: isMain ? "#888" : "#666",
-    },
-  }), []);
+  const createLabelNode = useCallback(
+    (headNode, text, isMain) => ({
+      id: `label_${headNode.id}`,
+      type: "branchLabel",
+      position: { x: headNode.position.x, y: headNode.position.y - 40 },
+      data: { label: text },
+      draggable: false,
+      zIndex: 1001,
+      style: {
+        pointerEvents: "none",
+        width: 200,
+        textAlign: "center",
+        fontSize: "12px",
+        fontWeight: "bold",
+        color: isMain ? "#888" : "#666",
+      },
+    }),
+    []
+  );
 
   /* ---------------- Branch Label Logic ---------------- */
 
@@ -82,8 +85,8 @@ const FlowCanvasInner = ({ file, domain, setGlobalLoading }) => {
 
     setNodes((currentNodes) => {
       const nodeMap = new Map(currentNodes.map((n) => [n.id, n]));
-
       const parentToChildren = {};
+
       edges.forEach((e) => {
         if (!parentToChildren[e.source]) parentToChildren[e.source] = [];
         parentToChildren[e.source].push(e.target);
@@ -99,17 +102,15 @@ const FlowCanvasInner = ({ file, domain, setGlobalLoading }) => {
         if (isMain) {
           children.forEach((childId) => {
             const child = nodeMap.get(childId);
-            if (child?.data?.isLocked) {
-              traverse(childId, true);
-            } else {
+            if (child?.data?.isLocked) traverse(childId, true);
+            else {
               newBranchHeads.add(childId);
               traverse(childId, false);
             }
           });
         } else {
-          if (children.length === 1) {
-            traverse(children[0], false);
-          } else {
+          if (children.length === 1) traverse(children[0], false);
+          else {
             continuationHeads.add(children[0]);
             traverse(children[0], false);
             children.slice(1).forEach((id) => {
@@ -120,16 +121,11 @@ const FlowCanvasInner = ({ file, domain, setGlobalLoading }) => {
         }
       };
 
-      if (nodeMap.has(DATASET_NODE_ID)) {
-        traverse(DATASET_NODE_ID, true);
-      }
+      if (nodeMap.has(DATASET_NODE_ID)) traverse(DATASET_NODE_ID, true);
 
       setBranchMap((prev) => {
         const next = new Map(prev);
-
-        for (const [id] of next) {
-          if (!nodeMap.has(id)) next.delete(id);
-        }
+        for (const [id] of next) if (!nodeMap.has(id)) next.delete(id);
 
         const used = new Set(next.values());
         newBranchHeads.forEach((id) => {
@@ -140,7 +136,6 @@ const FlowCanvasInner = ({ file, domain, setGlobalLoading }) => {
             used.add(num);
           }
         });
-
         return next;
       });
 
@@ -151,7 +146,7 @@ const FlowCanvasInner = ({ file, domain, setGlobalLoading }) => {
         (id) => nodeMap.get(id)?.data?.isLocked
       );
 
-      if (mainHead && nodeMap.has(mainHead)) {
+      if (mainHead) {
         labels.push(createLabelNode(nodeMap.get(mainHead), "MAIN BRANCH", true));
       }
 
@@ -170,7 +165,6 @@ const FlowCanvasInner = ({ file, domain, setGlobalLoading }) => {
         while (curr && !foundNum) {
           if (currentMap.has(curr)) foundNum = currentMap.get(curr);
           curr = childToParent(curr, edges);
-          if (curr === DATASET_NODE_ID) break;
         }
 
         if (foundNum && nodeMap.has(nodeId)) {
@@ -180,10 +174,10 @@ const FlowCanvasInner = ({ file, domain, setGlobalLoading }) => {
         }
       });
 
-      const nonLabelNodes = currentNodes.filter(
+      const nonLabels = currentNodes.filter(
         (n) => n.type !== "branchLabel"
       );
-      return [...nonLabelNodes, ...labels];
+      return [...nonLabels, ...labels];
     });
   }, [edges, mainBranchReady, childToParent, createLabelNode]);
 
@@ -246,7 +240,7 @@ const FlowCanvasInner = ({ file, domain, setGlobalLoading }) => {
     mainBranchReady,
   });
 
-  usePipelineRunner({
+  const { handleRunConfig } = usePipelineRunner({
     localFile,
     nodes,
     edges,
@@ -256,9 +250,45 @@ const FlowCanvasInner = ({ file, domain, setGlobalLoading }) => {
     onValidate: () => validatePipeline(nodes, edges),
   });
 
+  const handleClearCanvas = useCallback(() => {
+    const datasetNode = nodes.find((n) => n.id === DATASET_NODE_ID);
+    setBranchMap(new Map());
+    setNodes(datasetNode ? [datasetNode] : []);
+    setEdges([]);
+    setResults(null);
+    setIsResultsOpen(false);
+    setMainBranchReady(false);
+  }, [nodes]);
+
   return (
-    <div style={{ flex: 1, display: "flex", flexDirection: "column", height: "100%" }}>
+    <div style={{ flex: 1, position: "relative", height: "100%" }}>
       {error && <ErrorPopup message={error} onClose={() => setError(null)} />}
+
+      {/* ---------- ACTION BUTTONS ---------- */}
+      <div style={{ position: "absolute", top: 10, right: 10, zIndex: 20 }}>
+        {results && !isResultsOpen && (
+          <button
+            onClick={() => setIsResultsOpen(true)}
+            style={btnStyle("#17a2b8")}
+          >
+            View Results 📊
+          </button>
+        )}
+
+        <button
+          onClick={handleClearCanvas}
+          style={btnStyle("#6c757d")}
+        >
+          Clear Canvas
+        </button>
+
+        <button
+          onClick={handleRunConfig}
+          style={btnStyle("#e20606ff")}
+        >
+          Run Configuration
+        </button>
+      </div>
 
       <div style={{ flex: 1 }} onDrop={onDrop} onDragOver={onDragOver}>
         <ReactFlow
@@ -285,5 +315,18 @@ const FlowCanvasInner = ({ file, domain, setGlobalLoading }) => {
     </div>
   );
 };
+
+const btnStyle = (bg) => ({
+  display: "block",
+  marginBottom: 8,
+  padding: "8px 16px",
+  background: bg,
+  color: "#fff",
+  border: "none",
+  borderRadius: 6,
+  cursor: "pointer",
+  boxShadow: "0 2px 5px rgba(0,0,0,0.2)",
+  fontWeight: "bold",
+});
 
 export default FlowCanvasInner;
