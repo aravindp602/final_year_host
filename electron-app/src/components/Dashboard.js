@@ -61,7 +61,7 @@ const Dashboard = () => {
               }}
               onMouseEnter={() => setHoveredBtn('feedback')}
               onMouseLeave={() => setHoveredBtn(null)}
-              onClick={() => window.open('https://your-feedback-link.com', '_blank')}
+              onClick={() => window.open('https://forms.office.com/r/cMDEceTZs0', '_blank')}
             >
               Give Feedback
             </button>
