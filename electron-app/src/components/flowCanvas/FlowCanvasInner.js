@@ -63,6 +63,7 @@ const FlowCanvasInner = ({ file, domain, setGlobalLoading }) => {
   // Branch Labeling State
   const [branchMap, setBranchMap] = useState(new Map());
   const branchMapRef = useRef(branchMap);
+  const initializedRef = useRef(false); // [FIX] Ref to track initialization
 
   // React Flow Hooks
   const { fitView, project } = useReactFlow();
@@ -80,8 +81,8 @@ const FlowCanvasInner = ({ file, domain, setGlobalLoading }) => {
 
   // --- Initialize Dataset Node if file exists on mount ---
   useEffect(() => {
-    if (file && nodes.length === 0) {
-       // This handles the case where file prop is passed but event missed
+    // [FIX] Use ref to prevent duplicate initialization instead of nodes.length dependency
+    if (file && !initializedRef.current) {
        const datasetNode = {
           id: DATASET_NODE_ID,
           type: "datasetNode",
@@ -90,9 +91,14 @@ const FlowCanvasInner = ({ file, domain, setGlobalLoading }) => {
           draggable: false,
        };
        setNodes([datasetNode]);
-       setTimeout(() => fitView && fitView(), 100);
+       initializedRef.current = true;
+       
+       // Safe fitView call
+       setTimeout(() => {
+         if (fitView) fitView();
+       }, 100);
     }
-  }, [file, fitView]); // Removed nodes.length dependency to avoid loop, handled by check
+  }, [file, fitView]); 
 
   /* ---------------- HELPERS ---------------- */
 
@@ -277,6 +283,7 @@ const FlowCanvasInner = ({ file, domain, setGlobalLoading }) => {
     setResults(null);
     setIsResultsOpen(false);
     setMainBranchReady(false);
+    initializedRef.current = false; // Reset initialization
   }, [nodes]);
 
   /* ---------------- CUSTOM HOOKS ---------------- */
