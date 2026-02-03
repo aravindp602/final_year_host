@@ -4,6 +4,9 @@ const FileUploader = ({ onFileSelect, onDatasetUpload }) => {
   const fileInputRef = useRef(null);
   const [selectedFile, setSelectedFile] = useState(null);
   const [isDragging, setIsDragging] = useState(false);
+  const [error, setError] = useState(null); // New state for errors
+
+  const MAX_FILE_SIZE = 10 * 1024 * 1024; // 10 MB in bytes
 
   const handleFileChange = (e) => {
     const file = e.target.files[0];
@@ -12,19 +15,27 @@ const FileUploader = ({ onFileSelect, onDatasetUpload }) => {
   };
 
   const processFile = (file) => {
+    setError(null); // Reset error on new attempt
+
+    // Validate File Size
+    if (file.size > MAX_FILE_SIZE) {
+      setError("File size exceeds 10 MB limit.");
+      return;
+    }
+
     setSelectedFile(file);
     onFileSelect(file);
     if (onDatasetUpload) onDatasetUpload(file);
   };
 
   const handleRemoveFile = (e) => {
-    e.stopPropagation(); // Prevent triggering the file input
+    e.stopPropagation();
     setSelectedFile(null);
+    setError(null); // Clear errors when removing
     onFileSelect(null);
     if (fileInputRef.current) fileInputRef.current.value = "";
   };
 
-  // Drag and Drop Handlers
   const onDragOver = (e) => {
     e.preventDefault();
     setIsDragging(true);
@@ -38,6 +49,8 @@ const FileUploader = ({ onFileSelect, onDatasetUpload }) => {
     const file = e.dataTransfer.files[0];
     if (file && file.name.endsWith('.csv')) {
       processFile(file);
+    } else if (file) {
+      setError("Only .csv files are allowed.");
     }
   };
 
@@ -61,11 +74,11 @@ const FileUploader = ({ onFileSelect, onDatasetUpload }) => {
           onDrop={onDrop}
           style={{
             ...styles.dropZone,
-            borderColor: isDragging ? "#2563eb" : "#e2e8f0",
+            borderColor: error ? "#ef4444" : isDragging ? "#2563eb" : "#e2e8f0",
             backgroundColor: isDragging ? "#f0f7ff" : "#ffffff",
           }}
         >
-          <div style={styles.uploadIcon}>
+          <div style={{...styles.uploadIcon, color: error ? "#ef4444" : "#94a3b8"}}>
             <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
               <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4" />
               <polyline points="17 8 12 3 7 8" />
@@ -73,8 +86,12 @@ const FileUploader = ({ onFileSelect, onDatasetUpload }) => {
             </svg>
           </div>
           <div style={styles.textContainer}>
-            <span style={styles.mainText}>Click to upload</span>
-            <span style={styles.subText}>or drag and drop CSV</span>
+            <span style={{...styles.mainText, color: error ? "#ef4444" : "#2563eb"}}>
+                {error ? "Upload Failed" : "Click to upload"}
+            </span>
+            <span style={styles.subText}>
+                {error ? error : "or drag and drop CSV (Max 10MB)"}
+            </span>
           </div>
         </div>
       ) : (
@@ -88,7 +105,7 @@ const FileUploader = ({ onFileSelect, onDatasetUpload }) => {
           </div>
           <div style={styles.fileInfo}>
             <span style={styles.fileName}>{selectedFile.name}</span>
-            <span style={styles.fileSize}>{(selectedFile.size / 1024).toFixed(1)} KB</span>
+            <span style={styles.fileSize}>{(selectedFile.size / 1024 / 1024).toFixed(2)} MB</span>
           </div>
           <button onClick={handleRemoveFile} style={styles.removeBtn} title="Remove file">
             <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5">
@@ -98,6 +115,9 @@ const FileUploader = ({ onFileSelect, onDatasetUpload }) => {
           </button>
         </div>
       )}
+      
+      {/* Optional: Explicit error text below box if preferred */}
+      {/* {error && <div style={styles.errorText}>{error}</div>} */}
     </div>
   );
 };
@@ -108,16 +128,15 @@ const styles = {
     flexDirection: "column",
     gap: "12px",
   },
-    heading: {
+  heading: {
     fontSize: "16px",
     fontWeight: "600",
-    color: "#475569", // Slate 600
+    color: "#475569", 
     margin: "0 0 4px 0",
     textTransform: "uppercase",
     letterSpacing: "0.025em",
     marginTop: "10px",
   },
-  
   dropZone: {
     cursor: "pointer",
     display: "flex",
@@ -142,7 +161,7 @@ const styles = {
   mainText: {
     fontSize: "13px",
     fontWeight: "600",
-    color: "#2563eb", // Primary Blue
+    color: "#2563eb", 
   },
   subText: {
     fontSize: "12px",
@@ -170,7 +189,7 @@ const styles = {
     display: "flex",
     flexDirection: "column",
     flex: 1,
-    minWidth: 0, // Critical for text ellipsis
+    minWidth: 0, 
   },
   fileName: {
     fontSize: "13px",
@@ -195,11 +214,12 @@ const styles = {
     justifyContent: "center",
     borderRadius: "4px",
     transition: "all 0.2s",
-    ":hover": {
-        color: "#ef4444",
-        backgroundColor: "#fee2e2"
-    }
   },
+  errorText: {
+    fontSize: "12px",
+    color: "#ef4444",
+    marginTop: "-8px",
+  }
 };
 
 export default FileUploader;
