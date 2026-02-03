@@ -18,4 +18,4 @@ const isLocal =
  */
 export const API_BASE_URL = isLocal
   ? "http://localhost:5001"
-  : "https://houston-retailers-riders-marine.trycloudflare.com";
+  : "https://mia-submissions-smaller-boutique.trycloudflare.com";
