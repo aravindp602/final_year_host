@@ -1,8 +1,0 @@
-{
-  "rewrites": [
-    {
-      "source": "/api/(.*)",
-      "destination": "http://52.44.137.19:5001/$1"
-    }
-  ]
-}
