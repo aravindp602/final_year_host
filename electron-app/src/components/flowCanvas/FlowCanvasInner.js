@@ -33,9 +33,9 @@ const actionContainerStyle = {
   right: 10,
   zIndex: 20,
   display: "flex",
-  flexDirection: "column",
-  gap: "8px",
-  alignItems: "flex-end"
+  flexDirection: "row", // [FIX] Changed from 'column' to 'row'
+  gap: "10px",          // Added gap for horizontal spacing
+  alignItems: "center"
 };
 
 const btnStyle = (bg) => ({
@@ -47,7 +47,8 @@ const btnStyle = (bg) => ({
   cursor: "pointer",
   boxShadow: "0 2px 5px rgba(0,0,0,0.2)",
   fontWeight: "bold",
-  fontSize: "13px"
+  fontSize: "13px",
+  whiteSpace: "nowrap" // Prevents text wrapping in a single line
 });
 
 const FlowCanvasInner = ({ file, domain, setGlobalLoading }) => {
@@ -63,7 +64,7 @@ const FlowCanvasInner = ({ file, domain, setGlobalLoading }) => {
   // Branch Labeling State
   const [branchMap, setBranchMap] = useState(new Map());
   const branchMapRef = useRef(branchMap);
-  const initializedRef = useRef(false); // [FIX] Ref to track initialization
+  const initializedRef = useRef(false);
 
   // React Flow Hooks
   const { fitView, project } = useReactFlow();
@@ -81,7 +82,6 @@ const FlowCanvasInner = ({ file, domain, setGlobalLoading }) => {
 
   // --- Initialize Dataset Node if file exists on mount ---
   useEffect(() => {
-    // [FIX] Use ref to prevent duplicate initialization instead of nodes.length dependency
     if (file && !initializedRef.current) {
        const datasetNode = {
           id: DATASET_NODE_ID,
@@ -93,7 +93,6 @@ const FlowCanvasInner = ({ file, domain, setGlobalLoading }) => {
        setNodes([datasetNode]);
        initializedRef.current = true;
        
-       // Safe fitView call
        setTimeout(() => {
          if (fitView) fitView();
        }, 100);
@@ -143,7 +142,6 @@ const FlowCanvasInner = ({ file, domain, setGlobalLoading }) => {
       const newBranchHeads = new Set();
       const continuationHeads = new Set();
 
-      // Recursive traversal to identify branches
       const traverse = (nodeId, isMain) => {
         const children = parentToChildren[nodeId] || [];
         if (!children.length) return;
@@ -151,20 +149,16 @@ const FlowCanvasInner = ({ file, domain, setGlobalLoading }) => {
         if (isMain) {
           children.forEach((childId) => {
             const child = nodeMap.get(childId);
-            // If child is locked, it's still main branch
             if (child?.data?.isLocked) traverse(childId, true);
             else {
-              // Deviation -> New Custom Branch
               newBranchHeads.add(childId);
               traverse(childId, false);
             }
           });
         } else {
-          // Custom Branch Logic
           if (children.length === 1) {
             traverse(children[0], false);
           } else {
-            // Split
             continuationHeads.add(children[0]);
             traverse(children[0], false);
             children.slice(1).forEach((id) => {
@@ -177,10 +171,8 @@ const FlowCanvasInner = ({ file, domain, setGlobalLoading }) => {
 
       if (nodeMap.has(DATASET_NODE_ID)) traverse(DATASET_NODE_ID, true);
 
-      // Update Branch Map
       setBranchMap((prev) => {
         const next = new Map(prev);
-        // Cleanup deleted
         for (const [id] of next) if (!nodeMap.has(id)) next.delete(id);
 
         const used = new Set(next.values());
@@ -195,11 +187,9 @@ const FlowCanvasInner = ({ file, domain, setGlobalLoading }) => {
         return next;
       });
 
-      // Generate Label Nodes
       const labels = [];
       const currentMap = branchMapRef.current;
 
-      // 1. Main Branch Label
       const mainHead = parentToChildren[DATASET_NODE_ID]?.find(
         (id) => nodeMap.get(id)?.data?.isLocked
       );
@@ -207,7 +197,6 @@ const FlowCanvasInner = ({ file, domain, setGlobalLoading }) => {
         labels.push(createLabelNode(nodeMap.get(mainHead), "MAIN BRANCH", true));
       }
 
-      // 2. Custom Branch Labels
       currentMap.forEach((num, headId) => {
         if (nodeMap.has(headId)) {
           labels.push(
@@ -216,11 +205,9 @@ const FlowCanvasInner = ({ file, domain, setGlobalLoading }) => {
         }
       });
 
-      // 3. Continuation Labels
       continuationHeads.forEach((nodeId) => {
         let curr = childToParent(nodeId, edges);
         let foundNum = null;
-        // Backtrack to find parent branch number
         while (curr && !foundNum) {
           if (currentMap.has(curr)) foundNum = currentMap.get(curr);
           curr = childToParent(curr, edges);
@@ -233,7 +220,6 @@ const FlowCanvasInner = ({ file, domain, setGlobalLoading }) => {
         }
       });
 
-      // Filter out old labels and add new ones
       const nonLabels = currentNodes.filter((n) => n.type !== "branchLabel");
       return [...nonLabels, ...labels];
     });
@@ -244,8 +230,6 @@ const FlowCanvasInner = ({ file, domain, setGlobalLoading }) => {
   const onNodesChange = useCallback((changes) => {
     setNodes((nds) => {
       const updated = applyNodeChanges(changes, nds);
-      
-      // Update label positions if parent moves
       const moved = new Set(
         changes.filter((c) => c.type === "position" && c.dragging).map((c) => c.id)
       );
@@ -283,12 +267,11 @@ const FlowCanvasInner = ({ file, domain, setGlobalLoading }) => {
     setResults(null);
     setIsResultsOpen(false);
     setMainBranchReady(false);
-    initializedRef.current = false; // Reset initialization
+    initializedRef.current = false; 
   }, [nodes]);
 
   /* ---------------- CUSTOM HOOKS ---------------- */
 
-  // Handles: Dataset Upload Event, Pipeline Completion Event
   useGraphEvents({
     setNodes,
     setEdges,
@@ -299,9 +282,8 @@ const FlowCanvasInner = ({ file, domain, setGlobalLoading }) => {
     setMainBranchReady,
   });
 
-  // Handles: Drag-and-Drop, Connecting Nodes
   const { onDrop, onDragOver, onConnect } = useGraphInteractions({
-    file: localFile || file, // Use localFile if event set it, else prop
+    file: localFile || file, 
     nodes,
     edges,
     project,
@@ -311,7 +293,6 @@ const FlowCanvasInner = ({ file, domain, setGlobalLoading }) => {
     mainBranchReady,
   });
 
-  // Handles: Run Configuration Button
   const { handleRunConfig } = usePipelineRunner({
     localFile: localFile || file,
     nodes,
@@ -326,7 +307,7 @@ const FlowCanvasInner = ({ file, domain, setGlobalLoading }) => {
     <div style={{ flex: 1, position: "relative", height: "100%" }}>
       {error && <ErrorPopup message={error} onClose={() => setError(null)} />}
 
-      {/* ACTION BUTTONS */}
+      {/* ACTION BUTTONS: Now in a ROW */}
       <div style={actionContainerStyle}>
         {results && !isResultsOpen && (
           <button
