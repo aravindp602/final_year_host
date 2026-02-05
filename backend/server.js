@@ -38,23 +38,16 @@ function resolvePythonExecutable() {
 const pythonExecutable = resolvePythonExecutable();
 
 // --- FIXED CORS CONFIGURATION ---
-// Explicitly allowing your Vercel domains is safer and often required by browsers/proxies
 const allowedOrigins = [
   "http://localhost:3000",
   "http://localhost:3001",
-  "https://automatedclusteringelite.vercel.app", // Your Production Frontend
-  "https://automated-clustering-elite.vercel.app" // Vercel alias often used
+  "https://automatedclusteringelite.vercel.app", 
+  "https://automated-clustering-elite.vercel.app"
 ];
 
 app.use(cors({
   origin: function (origin, callback) {
-    // Allow requests with no origin (like mobile apps or curl requests)
     if (!origin) return callback(null, true);
-    
-    // Check if origin is in the allowed list or if we want to allow all (*) for dev
-    // For now, let's allow ALL to fix the immediate issue, but keep the list for reference
-    // callback(null, true); // Allow All (Easiest Fix)
-    
     if (allowedOrigins.indexOf(origin) !== -1 || true) { // Force True for debugging
       callback(null, true);
     } else {
@@ -66,8 +59,8 @@ app.use(cors({
   credentials: true 
 }));
 
-// Pre-flight handling for complex requests
-app.options('*', cors());
+// [FIX] Use Regex for wildcard to avoid path-to-regexp PathError
+app.options(/(.*)/, cors());
 
 app.use(express.json());
 
