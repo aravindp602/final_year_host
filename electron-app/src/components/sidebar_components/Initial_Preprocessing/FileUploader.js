@@ -6,7 +6,7 @@ const FileUploader = ({ onFileSelect, onDatasetUpload }) => {
   const [isDragging, setIsDragging] = useState(false);
   const [error, setError] = useState(null); // New state for errors
 
-  const MAX_FILE_SIZE = 10 * 1024 * 1024; // 10 MB in bytes
+  const MAX_FILE_SIZE = 5 * 1024 * 1024; // 5 MB in bytes
 
   const handleFileChange = (e) => {
     const file = e.target.files[0];
@@ -19,7 +19,7 @@ const FileUploader = ({ onFileSelect, onDatasetUpload }) => {
 
     // Validate File Size
     if (file.size > MAX_FILE_SIZE) {
-      setError("File size exceeds 10 MB limit.");
+      setError("File size exceeds 5 MB limit.");
       return;
     }
 
@@ -90,7 +90,7 @@ const FileUploader = ({ onFileSelect, onDatasetUpload }) => {
                 {error ? "Upload Failed" : "Click to upload"}
             </span>
             <span style={styles.subText}>
-                {error ? error : "or drag and drop CSV (Max 10MB)"}
+                {error ? error : "or drag and drop CSV (Max 5MB)"}
             </span>
           </div>
         </div>
