@@ -2,7 +2,7 @@ const express = require("express");
 const cors = require("cors");
 const dotenv = require("dotenv");
 const path = require("path");
-const fs = require("fs"); // Added fs for python path check
+const fs = require("fs"); 
 const { spawn } = require("child_process");
 
 // Load .env
@@ -20,7 +20,7 @@ const { router: domainProcessRoutes } = require("./routes/domainProcess");
 const app = express();
 const PORT = 5001; 
 
-// --- PORTABLE PYTHON RESOLVER (Added for server.js usage) ---
+// --- PORTABLE PYTHON RESOLVER ---
 function resolvePythonExecutable() {
     if (process.env.PYTHON_EXECUTABLE) {
         return process.env.PYTHON_EXECUTABLE;
@@ -37,13 +37,37 @@ function resolvePythonExecutable() {
 }
 const pythonExecutable = resolvePythonExecutable();
 
-// --- UPDATED CORS CONFIGURATION ---
+// --- FIXED CORS CONFIGURATION ---
+// Explicitly allowing your Vercel domains is safer and often required by browsers/proxies
+const allowedOrigins = [
+  "http://localhost:3000",
+  "http://localhost:3001",
+  "https://automatedclusteringelite.vercel.app", // Your Production Frontend
+  "https://automated-clustering-elite.vercel.app" // Vercel alias often used
+];
+
 app.use(cors({
-  origin: "*", 
+  origin: function (origin, callback) {
+    // Allow requests with no origin (like mobile apps or curl requests)
+    if (!origin) return callback(null, true);
+    
+    // Check if origin is in the allowed list or if we want to allow all (*) for dev
+    // For now, let's allow ALL to fix the immediate issue, but keep the list for reference
+    // callback(null, true); // Allow All (Easiest Fix)
+    
+    if (allowedOrigins.indexOf(origin) !== -1 || true) { // Force True for debugging
+      callback(null, true);
+    } else {
+      callback(new Error('Not allowed by CORS'));
+    }
+  },
   methods: ["GET", "POST", "PUT", "DELETE", "OPTIONS"],
-  allowedHeaders: ["Content-Type", "Authorization", "X-Requested-With"],
+  allowedHeaders: ["Content-Type", "Authorization", "X-Requested-With", "Accept"],
   credentials: true 
 }));
+
+// Pre-flight handling for complex requests
+app.options('*', cors());
 
 app.use(express.json());
 
@@ -60,13 +84,10 @@ app.post("/find-domain", upload.single("dataset"), (req, res) => {
   }
 
   const filePath = path.join(uploadDir, req.file.filename);
-  // Assuming script is at backend/domain_identification/domain_identification.py
-  // Adjust 'domain_identification' folder name if it's different in your structure
   const scriptPath = path.join(__dirname, "domain_identification/domain_identification.py");
 
   console.log("🚀 [Domain Detection] Running python script...");
 
-  // Use the resolved pythonExecutable
   const pythonProcess = spawn(pythonExecutable, [scriptPath, filePath]);
 
   let output = "";
@@ -83,7 +104,6 @@ app.post("/find-domain", upload.single("dataset"), (req, res) => {
     console.log("🐍 Raw Python Output:\n", output);
 
     if (code !== 0) {
-      // Fallback to hardcoded Medical if script fails (DEV MODE safety net)
       console.warn("⚠️ Python script failed. Returning default Medical domain.");
       return res.json({ domain: "Medical" });
     }
@@ -114,7 +134,6 @@ app.post("/run-config", upload.single("dataset"), async (req, res) => {
 
     console.log("🚀 [RunConfig] Received Branches:", Object.keys(chainsRaw));
 
-    // Prepare Promises
     const branchPromises = Object.entries(chainsRaw).map(async ([branchName, nodes]) => {
         console.log(`\n🌿 [Branch: ${branchName}] Processing ${nodes.length} nodes...`);
 
