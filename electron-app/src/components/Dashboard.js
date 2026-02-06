@@ -4,8 +4,7 @@ import FlowCanvas from './flowCanvas/FlowCanvas';
 import LoadingOverlay from './LoadingOverlay';
 import InstructionOverlay from './instruction_manual/InstructionOverlay';
 
-// 1. IMPORT YOUR LOGO HERE
-// Ensure the path matches where you saved your image
+// Import Logo
 import aceLogo from './assets/logo.png'; 
 
 const Dashboard = () => {
@@ -44,16 +43,30 @@ const Dashboard = () => {
       {/* HEADER */}
       <header style={styles.header}>
         <div style={styles.logoContainer}>
-          
-          {/* 2. REPLACED SVG ICON WITH IMAGE TAG */}
           <img src={aceLogo} alt="ACE Logo" style={styles.logoImage} />
-
           <span style={styles.logoText}>ACE <span style={{ fontWeight: 300 }}>- Automated Clustering Elite</span></span>
         </div>
 
         {/* TOP RIGHT NAVIGATION */}
         <div style={styles.navActions}>
           <div style={styles.segmentedControl}>
+            
+            {/* NEW: DATASETS BUTTON */}
+            <button
+              style={{
+                ...styles.navButton,
+                backgroundColor: hoveredBtn === 'datasets' ? 'rgba(255,255,255,0.2)' : 'transparent',
+              }}
+              onMouseEnter={() => setHoveredBtn('datasets')}
+              onMouseLeave={() => setHoveredBtn(null)}
+              // Replace this link with your actual dataset folder link
+              onClick={() => window.open('https://drive.google.com/drive/folders/1unCqiMdo0rpkxsp0EdCeXIr1hCgz6qeO?usp=drive_link', '_blank')}
+            >
+              Datasets
+            </button>
+
+            <div style={styles.verticalDivider} />
+
             <button
               style={{
                 ...styles.navButton,
@@ -65,7 +78,9 @@ const Dashboard = () => {
             >
               Give Feedback
             </button>
+            
             <div style={styles.verticalDivider} />
+            
             <button
               style={{
                 ...styles.navButton,
@@ -147,15 +162,12 @@ const styles = {
     gap: '12px',
   },
 
-  // 3. UPDATED STYLE FOR IMAGE LOGO
   logoImage: {
-    height: '32px', // Adjusts height to fit header
-    width: 'auto',  // Maintains aspect ratio
+    height: '32px', 
+    width: 'auto', 
     objectFit: 'contain',
     display: 'block'
   },
-
-  // Removed old logoIcon style since it is replaced by logoImage
 
   logoText: {
     fontSize: '18px',
@@ -190,6 +202,7 @@ const styles = {
     cursor: 'pointer',
     transition: 'all 0.2s ease',
     outline: 'none',
+    whiteSpace: 'nowrap', // Prevents button text from wrapping
   },
 
   verticalDivider: {
