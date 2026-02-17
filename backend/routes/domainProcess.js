@@ -36,41 +36,42 @@ const generateGraphData = (plan) => {
     nodes.push({ id: "dataset-node", type: "datasetNode", position: { x: xPos, y: 100 }, data: { label: "Dataset" } });
     xPos += 250;
 
-    const actions = new Set();
+    const actions = new Map(); // Using Map to preserve label and moduleId
     if (plan && typeof plan === 'object') {
         Object.values(plan).forEach(details => {
-            if (details.steps) {
-                details.steps.forEach(step => actions.add(step.action));
+            if (details.steps && Array.isArray(details.steps)) {
+                details.steps.forEach(step => {
+                    if (!actions.has(step.action)) {
+                        actions.set(step.action, { label: step.label, id: step.moduleId });
+                    }
+                });
             } else if (details.action) {
-                actions.add(details.action);
+                actions.set(details.action, { label: details.label || details.action, id: details.moduleId || `dp_${details.action}` });
             }
         });
     }
 
-    const actionMapping = [
-        { key: 'remove_duplicates', label: 'Remove Duplicates', id: 'dp1' },
-        { key: 'impute', label: 'Handle Missing', id: 'dp2' },
-        { key: 'outlier', label: 'Outlier Removal', id: 'dp3' },
-        { key: 'polynomial', label: 'Poly Features', id: 'dp5' },
-        { key: 'log', label: 'Log Transform', id: 'dp6' },
-        { key: 'encode', label: 'Encoding', id: 'dp7' },
-        { key: 'scale', label: 'Scaling', id: 'dp8' },
-        { key: 'normalize', label: 'Normalization', id: 'dp9' },
-        { key: 'pca', label: 'PCA', id: 'dp10' },
-        { key: 'drop', label: 'Drop Columns', id: 'dp_drop' }
+    // Logic order for visualization
+    const logicalOrder = [
+        "remove_duplicates", "impute", "handle_missing_values", 
+        "outlier", "polynomial", "log", "encode", "scale", "normalize", "pca"
     ];
 
-    actionMapping.forEach(step => {
-        if (actions.has(step.key)) {
-            const newNodeId = `${step.id}_${Date.now()}`;
-            nodes.push({
-                id: newNodeId, type: "preprocessingNode", position: { x: xPos, y: 100 },
-                data: { label: step.label, baseId: step.id, color: "#b730cfff" }
-            });
-            edges.push({ id: `e-${lastNodeId}-${newNodeId}`, source: lastNodeId, target: newNodeId, animated: true });
-            lastNodeId = newNodeId;
-            xPos += 250;
-        }
+    const sortedActions = Array.from(actions.entries()).sort((a, b) => {
+        let idxA = logicalOrder.findIndex(key => a[0].includes(key));
+        let idxB = logicalOrder.findIndex(key => b[0].includes(key));
+        return (idxA === -1 ? 99 : idxA) - (idxB === -1 ? 99 : idxB);
+    });
+
+    sortedActions.forEach(([key, info]) => {
+        const newNodeId = `${info.id}_${Date.now()}`;
+        nodes.push({
+            id: newNodeId, type: "preprocessingNode", position: { x: xPos, y: 100 },
+            data: { label: info.label, baseId: info.id, color: "#b730cfff" }
+        });
+        edges.push({ id: `e-${lastNodeId}-${newNodeId}`, source: lastNodeId, target: newNodeId, animated: true });
+        lastNodeId = newNodeId;
+        xPos += 250;
     });
 
     const defaultModelId = "m0"; 
@@ -88,7 +89,6 @@ const generateGraphData = (plan) => {
     return { nodes, edges };
 };
 
-// [FIX] Updated to stream logs (stdout) to terminal in real-time
 function runPythonScript(scriptPath, args = []) {
   return new Promise((resolve, reject) => {
     const python = spawn(pythonExecutable, ["-u", scriptPath, ...args], {
@@ -98,13 +98,11 @@ function runPythonScript(scriptPath, args = []) {
 
     let stdout = "";
     let stderr = "";
-    let isPrintingJson = false; // Flag to hide raw JSON blocks from terminal
+    let isPrintingJson = false;
 
     python.stdout.on("data", (data) => {
       const str = data.toString();
       stdout += str;
-
-      // Smart Log Streaming: Print everything EXCEPT the big JSON result blocks
       if (str.includes("__JSON_START__") || str.includes("__JSON_RESULT_START__")) {
           isPrintingJson = true;
           const parts = str.split(/__JSON_START__|__JSON_RESULT_START__/);
@@ -116,7 +114,7 @@ function runPythonScript(scriptPath, args = []) {
           if (parts[1] && parts[1].trim()) process.stdout.write(parts[1]);
       } 
       else if (!isPrintingJson) {
-          process.stdout.write(str); // Stream normal logs (e.g., Training progress)
+          process.stdout.write(str);
       }
     });
 
@@ -127,7 +125,6 @@ function runPythonScript(scriptPath, args = []) {
     });
 
     python.on("close", (code) => {
-      // 1. Priority: JSON Result Block
       const resultMatch = stdout.match(/__JSON_RESULT_START__([\s\S]*?)__JSON_RESULT_END__/) || 
                           stdout.match(/__JSON_START__([\s\S]*?)__JSON_END__/);
       
@@ -135,14 +132,10 @@ function runPythonScript(scriptPath, args = []) {
         try {
           return resolve(JSON.parse(resultMatch[1].trim()));
         } catch (err) {
-          console.error("JSON Parsing failed on result block:", err.message);
+          console.error("JSON Parsing failed:", err.message);
         }
       }
-
-      // 2. Fallback: Full Output (if success)
       if (code === 0) return resolve(stdout);
-
-      // 3. Failure
       reject(new Error(stderr || `Python exited with code ${code}`));
     });
   });
@@ -150,32 +143,44 @@ function runPythonScript(scriptPath, args = []) {
 
 // ---------------- ROUTES ----------------
 
-router.post("/generate-medical-plan", upload.single("dataset"), async (req, res) => {
+// [UPDATED] Generic Domain Plan Generator
+router.post("/generate-domain-plan", upload.single("dataset"), async (req, res) => {
   if (!req.file) return res.status(400).json({ message: "No file" });
 
-  console.log("🤖 [Medical Plan] Starting generation for:", req.file.filename);
+  const filePath = path.join(uploadDir, req.file.filename);
+  const detectedDomain = req.body.domain || "Medical"; // Sent from Frontend
+
+  // Switch script based on detected domain
+  let scriptPath = "preprocessing/Domain_based_preprocessing/medical_plan_generator.py";
+  if (detectedDomain === "Finance") {
+      scriptPath = "preprocessing/Domain_based_preprocessing/finance_plan_generator.py";
+  }
+
+  console.log(`🤖 [Plan Generation] Domain: ${detectedDomain} | Engine: ${scriptPath}`);
 
   try {
-    const result = await runPythonScript(
-      "preprocessing/Domain_based_preprocessing/medical_plan_generator.py",
-      [path.join(uploadDir, req.file.filename)]
-    );
-    console.log("✅ [Medical Plan] Successfully generated.");
+    const result = await runPythonScript(scriptPath, [filePath]);
+    console.log("✅ [Plan Generation] Successfully generated.");
     res.json(result);
   } catch (err) {
-    console.error("❌ [Medical Plan] Failed:", err.message);
+    console.error("❌ [Plan Generation] Failed:", err.message);
     res.status(500).json({ message: "Plan generation failed", details: err.message });
   }
 });
 
 router.post("/regenerate-plan", upload.single("dataset"), async (req, res) => {
-    if (!req.file || !req.body.report) return res.status(400).json({ message: "Invalid request" });
+    if (!req.file || !req.body.report || !req.body.domain) return res.status(400).json({ message: "Invalid request" });
+
+    const filePath = path.join(uploadDir, req.file.filename);
+    const detectedDomain = req.body.domain;
+
+    let scriptPath = "preprocessing/Domain_based_preprocessing/medical_plan_generator.py";
+    if (detectedDomain === "Finance") {
+        scriptPath = "preprocessing/Domain_based_preprocessing/finance_plan_generator.py";
+    }
 
     try {
-        const result = await runPythonScript(
-            "preprocessing/Domain_based_preprocessing/medical_plan_generator.py",
-            [path.join(uploadDir, req.file.filename), "--regenerate", req.body.report]
-        );
+        const result = await runPythonScript(scriptPath, [filePath, "--regenerate", req.body.report]);
         console.log("✅ [Medical Plan] Regenerated successfully.");
         res.json(result);
     } catch (err) {
@@ -190,88 +195,58 @@ router.post("/execute-approved-plan", upload.single("dataset"), async (req, res)
     const plan = JSON.parse(req.body.plan);
     const branchName = "main_branch";
     const preprocessedPath = path.join(rootDir, `${branchName}_processed.csv`);
-
-    // --- LOGGING DISABLED ---
-    // The following lines were creating the intermediate log folder.
-    // They are commented out to prevent saving intermediate CSV steps.
-    
-    // const logDirPath = path.join(rootDir, "preprocessing", "Domain_based_preprocessing", `${branchName}_logging`);
-    // if (!fs.existsSync(logDirPath)) fs.mkdirSync(logDirPath, { recursive: true });
-
-    // We define an empty string or dummy path to satisfy the Python script argument requirement
     const logDirPath = ""; 
-    // ------------------------
   
-    console.log(`\n🏥 Executing Medical Plan on ${branchName}...`);
+    console.log(`\n🏥 Executing AI Strategy on ${branchName}...`);
   
     try {
-      // Step 1: Preprocessing
+      // Preprocessing logic is domain-agnostic (executes the JSON)
       await runPythonScript(
-        "preprocessing/Domain_based_preprocessing/medical_plan_executor.py",
+        "preprocessing/Domain_based_preprocessing/domain_plan_executor.py",
         [req.file.path, JSON.stringify(plan), preprocessedPath, logDirPath]
       );
       console.log(`   ✅ Preprocessing Complete.`);
 
-      // Step 2: Training
+      // Training
       let trainingResults = [];
       let trainedModelPath = null;
       try {
           const allModels = loadJsonSafe("model_selectionAndTraining/model_names.json");
-          const mList = ["m0"]; 
-          const selectedModels = allModels.filter(m => mList.includes(m.id));
-          const payload = selectedModels.length > 0 ? selectedModels : [{ id: "m0", name: "AutoML", algo: "automl" }];
+          const payload = [{ id: "m0", name: "AutoML", algo: "automl" }];
 
-          // Run script (Logs will now appear in terminal)
-          const result = await runPythonScript(
-            "model_selectionAndTraining/model_handler.py",
-            [preprocessedPath, JSON.stringify(payload)]
-          );
+          const result = await runPythonScript("model_selectionAndTraining/model_handler.py", [preprocessedPath, JSON.stringify(payload)]);
 
-          // If result is already parsed object (from runPythonScript priority 1)
-          if (typeof result === 'object') {
-              trainingResults = result;
-          } else if (typeof result === 'string') {
-              // Fallback parsing just in case
+          if (typeof result === 'object') trainingResults = result;
+          else if (typeof result === 'string') {
               const jsonStart = result.indexOf("__JSON_START__");
               const jsonEnd = result.indexOf("__JSON_END__");
-              if (jsonStart !== -1 && jsonEnd !== -1) {
-                  trainingResults = JSON.parse(result.substring(jsonStart + 14, jsonEnd));
-              }
+              if (jsonStart !== -1 && jsonEnd !== -1) trainingResults = JSON.parse(result.substring(jsonStart + 14, jsonEnd));
           }
 
-          if (trainingResults && trainingResults.length > 0) {
-              trainedModelPath = trainingResults[0].path;
-          }
+          if (trainingResults && trainingResults.length > 0) trainedModelPath = trainingResults[0].path;
           console.log(`   ✅ Model Training Complete.`);
       } catch (err) { console.error(`[Model Error] ${err.message}`); }
 
-      // Step 3: Output Generation
+      // Output Generation
       let visualizationData = {};
       if (trainedModelPath) {
         try {
-          const result = await runPythonScript(
-            "output_section/output_handler.py",
-            [preprocessedPath, trainedModelPath, JSON.stringify(["o1"])]
-          );
-          
-          if (typeof result === 'object') {
-              visualizationData = result;
-          } else if (typeof result === 'string') {
+          const result = await runPythonScript("output_section/output_handler.py", [preprocessedPath, trainedModelPath, JSON.stringify(["o1"])]);
+          if (typeof result === 'object') visualizationData = result;
+          else if (typeof result === 'string') {
               const jsonStart = result.indexOf("__JSON_START__");
               const jsonEnd = result.indexOf("__JSON_END__");
-              if (jsonStart !== -1 && jsonEnd !== -1) {
-                  visualizationData = JSON.parse(result.substring(jsonStart + 14, jsonEnd));
-              }
+              if (jsonStart !== -1 && jsonEnd !== -1) visualizationData = JSON.parse(result.substring(jsonStart + 14, jsonEnd));
           }
           console.log(`   ✅ Output Generation Complete.`);
         } catch (err) { console.error(`[Output Error] ${err.message}`); }
       }
 
-      // Step 4: Generate Graph
+      // Generate Graph
       const graphData = generateGraphData(plan);
 
       res.json({
-          message: "Medical Plan Executed Successfully",
+          message: "AI Strategy Executed Successfully",
           graph: graphData,
           outputs: visualizationData,
           trainingResults: trainingResults,
