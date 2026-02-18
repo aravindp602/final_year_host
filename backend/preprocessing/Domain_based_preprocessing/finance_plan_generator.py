@@ -12,7 +12,7 @@ from typing import Dict, Any, List
 from dotenv import load_dotenv
 
 # ============================================================
-# UTF-8 SAFETY (Windows Compatibility)
+# UTF-8 SAFETY
 # ============================================================
 def force_utf8_streams():
     try:
@@ -111,18 +111,20 @@ class FinancePlanGenerator:
             col_stats.append(f"VAR: '{col}' | Type: {dtype} {skew_hint} | {status} | Unique: {unique}")
         return "\n".join(col_stats)
 
+    # PHASE 1: ASSESSMENT
     def generate_executive_summary(self, df):
         safe_log("\n--- Phase 1: Assessment ---")
         prompt = f"You are a Chief Risk Officer. Audit this finance dataset:\n{self.get_dataset_profile(df)}\nIdentify domain and hygiene risks. < 200 words."
         return ask_llm(prompt, temperature=0.3)
 
+    # PHASE 2: TECHNICAL STRATEGY
     def generate_detailed_strategy(self, df, summary):
         safe_log("\n--- Phase 2: Technical Strategy ---")
         profile = self.get_dataset_profile(df)
         
         prompt = f"""
         You are a **Lead Financial Data Scientist**.
-        Design a **Multi-Step Preprocessing Pipeline**.
+        Design a **Multi-Step Quantitative Pipeline**.
 
         CONTEXT:
         {summary}
@@ -148,6 +150,9 @@ class FinancePlanGenerator:
 
         4. **EXCLUSION**:
            - High Cardinality IDs (TransactionID): `drop`.
+           
+        5. **FEATURE PROTECTION**:
+           - NEVER drop 'Age', 'Balance', 'Salary', 'Investment', 'Gender'. These are critical.
 
         ==================================================
         OUTPUT FORMAT (Markdown):
@@ -160,14 +165,25 @@ class FinancePlanGenerator:
         """
         return clean_strategy_text(ask_llm(prompt, temperature=0.2))
 
+    # PHASE 3: JSON COMPILER & NORMALIZATION
     def _normalize_plan(self, data, df):
         normalized = {}
         all_cols = df.columns.tolist()
         PHRASE_MAP = {"impute": "impute", "scale": "scale", "encode": "encode", "log": "log", "drop": "drop"}
         
+        # Handle list vs dict
+        if isinstance(data, list):
+            new_data = {}
+            for item in data:
+                if isinstance(item, dict):
+                    for k in ['column', 'name', 'col']:
+                        if k in item: new_data[item[k]] = item; break
+            if new_data: data = new_data
+            else:
+                if len(data) == len(all_cols): data = dict(zip(all_cols, data))
+
         for col in all_cols:
             col_lower = col.lower()
-            # Case-insensitive lookup
             info = next((v for k, v in data.items() if k.lower() == col_lower), {})
             
             actions = info.get("actions", [])
@@ -180,14 +196,18 @@ class FinancePlanGenerator:
                     mod = self.MODULE_LIBRARY[key]
                     steps.append({"action": key, "moduleId": mod["id"], "label": mod["label"], "params": "auto"})
             
-            # --- INTELLIGENT FALLBACK ---
-            if not steps or (len(steps) == 1 and steps[0]['action'] == 'drop' and col.lower() not in ['id', 'index']):
+            # --- INTELLIGENT FALLBACK (Feature Protection) ---
+            if not steps or (len(steps) == 1 and steps[0]['action'] == 'drop' and col.lower() not in ['id', 'index', 'acc']):
                 if pd.api.types.is_numeric_dtype(df[col]):
                     steps = [{"action": "scale", "moduleId": "dp8", "label": "Scaling", "params": "auto"}]
+                    reason = f"Numerical financial feature '{col}' standardized for quantitative analysis."
                 else:
                     steps = [{"action": "encode", "moduleId": "dp7", "label": "Encoding", "params": "auto"}]
+                    reason = f"Categorical feature '{col}' encoded to preserve transactional characteristics."
+            else:
+                reason = info.get("reason", "Standard financial preprocessing.")
 
-            normalized[col] = {"steps": steps, "reason": info.get("reason", "Standard financial preprocessing.")}
+            normalized[col] = {"steps": steps, "reason": reason}
         return normalized
 
     def generate_json_plan(self, df, strategy):
