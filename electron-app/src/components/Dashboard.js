@@ -44,7 +44,7 @@ const Dashboard = () => {
       <header style={styles.header}>
         <div style={styles.logoContainer}>
           <img src={aceLogo} alt="ACE Logo" style={styles.logoImage} />
-          <span style={styles.logoText}>ACE <span style={{ fontWeight: 300 }}>- Automated Clustering Elite</span></span>
+          <span style={styles.logoText}>PAPAD <span style={{ fontWeight: 300 }}>- Platform for Automated Preprocessing And Domain-identification </span></span>
         </div>
 
         {/* TOP RIGHT NAVIGATION */}

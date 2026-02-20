@@ -7,12 +7,10 @@ import numpy as np
 import re
 import traceback
 import requests
-import ast
-from typing import Dict, Any, List
-from dotenv import load_dotenv
+from typing import Dict, Any
 
 # ============================================================
-# UTF-8 SAFETY
+# SYSTEM CONFIG
 # ============================================================
 def force_utf8_streams():
     try:
@@ -28,217 +26,291 @@ def safe_log(message):
     try: print(message, file=sys.stderr, flush=True)
     except: pass
 
-# ============================================================
-# CONFIGURATION
-# ============================================================
-load_dotenv()
+# --- OLLAMA CONFIG ---
 OLLAMA_URL = "http://localhost:11434/api/generate"
 OLLAMA_MODEL = "llama3.2" 
 
 # ============================================================
-# LLM API
-# ============================================================
-def ask_llm(prompt: str, temperature: float = 0.2) -> str:
-    try:
-        response = requests.post(OLLAMA_URL, json={
-            "model": OLLAMA_MODEL, "prompt": prompt, "temperature": temperature, "stream": False,
-            "options": {"num_ctx": 8192}
-        }, timeout=300)
-        return response.json().get("response", "").strip() if response.status_code == 200 else ""
-    except Exception as e:
-        safe_log(f"   [Error] Connection failed: {e}")
-        return ""
-
-def ask_llm_json(prompt: str, temperature: float = 0.1) -> str:
-    try:
-        response = requests.post(OLLAMA_URL, json={
-            "model": OLLAMA_MODEL, "prompt": prompt, "format": "json", 
-            "temperature": temperature, "stream": False,
-            "options": {"num_ctx": 8192}
-        }, timeout=300)
-        return response.json().get("response", "{}") if response.status_code == 200 else "{}"
-    except Exception: return "{}"
-
-# ============================================================
 # UTILITIES
 # ============================================================
-def safe_parse_json(text: str) -> Dict:
-    start, end = text.find('{'), text.rfind('}')
-    cleaned = text[start : end + 1] if start != -1 else text
-    try: return json.loads(cleaned)
-    except:
-        try: return ast.literal_eval(cleaned)
-        except: return {}
 
-def clean_strategy_text(text: str) -> str:
-    if not text: return ""
-    return re.sub(r'([^*])\*([^*]+)\*', r'\1\2', re.sub(r'\*\*(.*?)\*\*', r'\1', text)).replace("`", "")
+def clean_json_text(text: str) -> str:
+    if not text: return "{}"
+    text = re.sub(r'```json', '', text, flags=re.IGNORECASE)
+    text = re.sub(r'```', '', text)
+    text = re.sub(r'//.*', '', text)
+    text = re.sub(r',(\s*[}\]])', r'\1', text)
+    start = text.find('{')
+    end = text.rfind('}')
+    if start != -1 and end != -1:
+        return text[start : end + 1]
+    return text.strip()
+
+def ask_ollama(prompt: str, temperature: float = 0.1) -> str:
+    """Uses requests to call local Ollama API."""
+    try:
+        safe_log(f"   [Step] Requesting Ollama ({OLLAMA_MODEL})...")
+        payload = {
+            "model": OLLAMA_MODEL,
+            "prompt": prompt,
+            "stream": False,
+            "options": {
+                "temperature": temperature,
+                "num_ctx": 4096
+            }
+        }
+        response = requests.post(OLLAMA_URL, json=payload, timeout=300)
+        if response.status_code == 200:
+            return response.json().get("response", "")
+        else:
+            safe_log(f"   [Error] Ollama returned status {response.status_code}")
+            return ""
+    except Exception as e:
+        safe_log(f"   [Error] Connection to Ollama failed: {e}")
+        return ""
 
 # ============================================================
-# CORE ENGINE - FINANCE
+# FINANCE ENGINE
 # ============================================================
+
 class FinancePlanGenerator:
     def __init__(self):
-        safe_log("[Init] Financial Intelligence Engine Started")
+        safe_log("[Init] Initializing Finance Engine (Ollama/Requests)...")
         self.MODULE_LIBRARY = {
-            "remove_duplicates": {"id": "dp1", "label": "Remove Duplicates"},
-            "impute": {"id": "dp2", "label": "Handle Missing Values"},
-            "outlier": {"id": "dp3", "label": "Outlier Removal"},
-            "polynomial": {"id": "dp5", "label": "Polynomial Features"},
-            "log": {"id": "dp6", "label": "Log Transform"},
-            "encode": {"id": "dp7", "label": "Encoding"},
-            "scale": {"id": "dp8", "label": "Scaling"},
-            "normalize": {"id": "dp9", "label": "Normalization"},
-            "pca": {"id": "dp10", "label": "PCA"},
-            "drop": {"id": "dp_drop", "label": "Drop Column"}
+            "remove_duplicates": {"id": "dp1", "label": "Remove Duplicates (D)", "name": "remove_duplicates"},
+            "impute": {"id": "dp2", "label": "Handle Missing Values (D)", "name": "handle_missing_values"},
+            "outlier": {"id": "dp3", "label": "Outlier Removal (D)", "name": "outlier_removal_iqr"},
+            "log": {"id": "dp6", "label": "Log Transform (D)", "name": "log_transform"},
+            "encode": {"id": "dp7", "label": "Encoding (D)", "name": "encoding"},
+            "scale": {"id": "dp8", "label": "Scaling (D)", "name": "scaling"},
+            "drop": {"id": "dp_drop", "label": "Drop Column", "name": "drop"}
         }
 
+    # ---------------- DATA PROFILING ----------------
+
     def get_dataset_profile(self, df: pd.DataFrame) -> str:
-        col_stats = []
-        df_clean = df.replace([r'^\s*$', r'^\?$', r'^NA$', r'^nan$'], np.nan, regex=True)
-        for col in df_clean.columns:
-            dtype, missing, unique = str(df_clean[col].dtype), int(df_clean[col].isnull().sum()), int(df_clean[col].nunique())
-            status = f"[🚨 MISSING: {missing}]" if missing > 0 else "[COMPLETE]"
-            
-            # SKEW DETECTION
-            skew_hint = ""
-            if pd.api.types.is_numeric_dtype(df_clean[col]) and unique > 20:
-                try:
-                    s = df_clean[col].skew()
-                    if abs(s) > 1.0: skew_hint = "[HIGH SKEW]"
-                except: pass
+        try:
+            col_stats = []
+            df_clean = df.replace([r'^\s*$', r'^\?$', r'^NA$', r'^nan$', r'^null$', r'^None$'], np.nan, regex=True)
 
-            col_stats.append(f"VAR: '{col}' | Type: {dtype} {skew_hint} | {status} | Unique: {unique}")
-        return "\n".join(col_stats)
+            for col in df_clean.columns:
+                dtype = str(df_clean[col].dtype)
+                missing_count = int(df_clean[col].isnull().sum())
+                unique = int(df_clean[col].nunique())
+                
+                skew_hint = ""
+                if pd.api.types.is_numeric_dtype(df_clean[col]):
+                    try:
+                        skew = df_clean[col].skew()
+                        if abs(skew) > 1.5: skew_hint = "(Heavy-Tail/Power Law)"
+                    except: pass
 
-    # PHASE 1: ASSESSMENT
-    def generate_executive_summary(self, df):
-        safe_log("\n--- Phase 1: Assessment ---")
-        prompt = f"You are a Chief Risk Officer. Audit this finance dataset:\n{self.get_dataset_profile(df)}\nIdentify domain and hygiene risks. < 200 words."
-        return ask_llm(prompt, temperature=0.3)
+                col_stats.append(f"VAR: '{col}' | Type: {dtype} | Missing: {missing_count} {skew_hint}")
 
-    # PHASE 2: TECHNICAL STRATEGY
-    def generate_detailed_strategy(self, df, summary):
-        safe_log("\n--- Phase 2: Technical Strategy ---")
+            return "\n".join(col_stats)
+        except Exception as e:
+            safe_log(f"[Error] Profiling Failed: {e}")
+            return "Dataset Profile Error"
+
+    # ============================================================
+    # PHASE 1: RISK ASSESSMENT
+    # ============================================================
+
+    def generate_executive_summary(self, df: pd.DataFrame) -> str:
+        safe_log("\n--- Phase 1: Risk Assessment ---")
         profile = self.get_dataset_profile(df)
-        
+
         prompt = f"""
-        You are a **Lead Financial Data Scientist**.
-        Design a **Multi-Step Quantitative Pipeline**.
+SYSTEM ROLE:
+You are a **Chief Risk Officer (CRO)** analyzing a financial dataset.
 
-        CONTEXT:
-        {summary}
+DATA PROFILE:
+{profile}
 
-        DATA PROFILE (SOURCE OF TRUTH):
-        {profile}
+INSTRUCTIONS:
+Write a 200-word Risk Assessment covering:
+1.  **Financial Domain**: (e.g., Credit Risk, Fraud Detection, Market Trading).
+2.  **Data Quality**: Discuss missing financial records and heavy-tailed monetary values.
+3.  **Statistical Challenges**: Highlight high cardinality categorical data or potential outliers.
 
-        ==================================================
-        DECISION TREE (APPLY IN ORDER):
-        ==================================================
+TONE: Professional and Quantitative.
+"""
+        return ask_ollama(prompt, temperature=0.3)
 
-        1. **INTEGRITY CHECK (MISSING DATA)**:
-           - IF [MISSING]: Start with `handle_missing_values` (Mean/Mode).
-           - IF [COMPLETE]: Skip imputation.
+    # ============================================================
+    # PHASE 2: QUANTITATIVE STRATEGY
+    # ============================================================
 
-        2. **DISTRIBUTION CHECK (NUMERIC ONLY)**:
-           - IF [HIGH SKEW]: Add `log_transform` to normalize volatility (e.g. Income/Balance).
-           - ELSE IF Continuous: Add `scaling` (Standard Scaler).
+    def generate_detailed_strategy(self, df: pd.DataFrame, executive_summary: str) -> str:
+        safe_log("\n--- Phase 2: Quantitative Strategy ---")
+        profile = self.get_dataset_profile(df)
 
-        3. **CATEGORICAL LOGIC**:
-           - Nominal (Branch, Gender): `encoding` (One-Hot).
-           - Ordinal (Rating AAA-D): `encoding` (Label).
+        prompt = f"""
+SYSTEM ROLE:
+You are a **Quantitative Data Scientist**. Design a **Multi-Step Preprocessing Pipeline**.
 
-        4. **EXCLUSION**:
-           - High Cardinality IDs (TransactionID): `drop`.
-           
-        5. **FEATURE PROTECTION**:
-           - NEVER drop 'Age', 'Balance', 'Salary', 'Investment', 'Gender'. These are critical.
+AVAILABLE MODULES:
+- dp1: Remove Duplicates
+- dp2: Handle Missing Values (Imputation)
+- dp3: Outlier Removal
+- dp6: Log Transform
+- dp7: Encoding
+- dp8: Scaling
+- dp_drop: Drop Column
 
-        ==================================================
-        OUTPUT FORMAT (Markdown):
-        
-        ### Variable Analysis
-        
-        **[Column Name]**
-        - *Logic Reason*: [Financial justification]
-        - *Action Sequence*: [Impute -> Log -> Scale / One-Hot / Drop]
-        """
-        return clean_strategy_text(ask_llm(prompt, temperature=0.2))
+DATA PROFILE:
+{profile}
 
-    # PHASE 3: JSON COMPILER & NORMALIZATION
-    def _normalize_plan(self, data, df):
+### QUANTITATIVE RULES (Apply Strictly):
+
+1.  **MONETARY VALUES & HEAVY TAILS** (Skew > 1.0) (e.g., Annual Income, Transaction Amount, Debt):
+    * *Sequence*: `["impute", "outlier", "log", "scale"]`
+    * *Reason*: "1. Impute missing data. 2. Cap extreme outliers (winsorize) to prevent volatility. 3. Log-transform to normalize power-law distribution common in finance. 4. Scale to standardize for regression/neural nets."
+
+2.  **FINANCIAL RATIOS / PERCENTAGES** (e.g., Interest Rate, Utilization):
+    * *Sequence*: `["impute", "scale"]`
+    * *Reason*: "Ratios are bounded. Imputation fills gaps; Scaling aligns variance with other features."
+
+3.  **CATEGORICAL RISK FACTORS** (e.g., Loan Grade, Home Ownership):
+    * *Sequence*: `["encode"]`
+    * *Reason*: "Convert nominal/ordinal risk factors into numeric vectors."
+
+4.  **ADMINISTRATIVE** (IDs, Names, UUIDs):
+    * *Sequence*: `["drop"]`
+    * *Reason*: "Identifier with no predictive signal."
+
+OUTPUT FORMAT (Markdown):
+For each column, list the **Steps** and the **Quantitative Justification**.
+"""
+        return ask_ollama(prompt, temperature=0.1)
+
+    # ============================================================
+    # PHASE 3: JSON MAPPING
+    # ============================================================
+
+    def _robust_json_generation(self, prompt: str) -> Dict[str, Any]:
+        for attempt in range(3):
+            if attempt > 0: safe_log(f"   [Retry] JSON Parse attempt {attempt+1}...")
+            raw = ask_ollama(prompt, temperature=0.1)
+            clean = clean_json_text(raw)
+            try:
+                data = json.loads(clean)
+                if len(data.keys()) > 0: return data
+            except: pass
+        return {}
+
+    def _normalize_plan(self, data: Dict[str, Any]) -> Dict[str, Any]:
         normalized = {}
-        all_cols = df.columns.tolist()
-        PHRASE_MAP = {"impute": "impute", "scale": "scale", "encode": "encode", "log": "log", "drop": "drop"}
-        
-        # Handle list vs dict
-        if isinstance(data, list):
-            new_data = {}
-            for item in data:
-                if isinstance(item, dict):
-                    for k in ['column', 'name', 'col']:
-                        if k in item: new_data[item[k]] = item; break
-            if new_data: data = new_data
-            else:
-                if len(data) == len(all_cols): data = dict(zip(all_cols, data))
+        for col, info in data.items():
+            if not isinstance(info, dict): continue
+            
+            raw_actions_list = info.get("actions", [])
+            if isinstance(raw_actions_list, str): raw_actions_list = [raw_actions_list]
+            
+            if len(raw_actions_list) == 1 and "," in raw_actions_list[0]:
+                raw_actions_list = [x.strip() for x in raw_actions_list[0].split(",")]
 
-        for col in all_cols:
-            col_lower = col.lower()
-            info = next((v for k, v in data.items() if k.lower() == col_lower), {})
-            
-            actions = info.get("actions", [])
-            if isinstance(actions, str): actions = [actions]
-            
-            steps = []
-            for act in actions:
-                key = next((k for p, k in PHRASE_MAP.items() if p in str(act).lower()), None)
-                if key:
-                    mod = self.MODULE_LIBRARY[key]
-                    steps.append({"action": key, "moduleId": mod["id"], "label": mod["label"], "params": "auto"})
-            
-            # --- INTELLIGENT FALLBACK (Feature Protection) ---
-            if not steps or (len(steps) == 1 and steps[0]['action'] == 'drop' and col.lower() not in ['id', 'index', 'acc']):
-                if pd.api.types.is_numeric_dtype(df[col]):
-                    steps = [{"action": "scale", "moduleId": "dp8", "label": "Scaling", "params": "auto"}]
-                    reason = f"Numerical financial feature '{col}' standardized for quantitative analysis."
-                else:
-                    steps = [{"action": "encode", "moduleId": "dp7", "label": "Encoding", "params": "auto"}]
-                    reason = f"Categorical feature '{col}' encoded to preserve transactional characteristics."
-            else:
-                reason = info.get("reason", "Standard financial preprocessing.")
+            normalized_actions = []
+            for raw_action in raw_actions_list:
+                act_str = str(raw_action).lower().strip()
+                module_key = None
+                final_params = "null"
 
-            normalized[col] = {"steps": steps, "reason": reason}
+                if "duplicate" in act_str: module_key = "remove_duplicates"
+                elif "impute" in act_str or "missing" in act_str:
+                    module_key = "impute"
+                    final_params = "iterative" 
+                elif "outlier" in act_str: module_key = "outlier"
+                elif "log" in act_str: module_key = "log"
+                elif "drop" in act_str: module_key = "drop"
+                elif "encode" in act_str:
+                    module_key = "encode"
+                    final_params = "one_hot_encoder"
+                elif "scale" in act_str:
+                    module_key = "scale"
+                    final_params = "standard_scaler"
+                elif "normal" in act_str: module_key = "normalize"
+                elif "pca" in act_str: module_key = "pca"
+
+                if module_key:
+                    mod_info = self.MODULE_LIBRARY.get(module_key, {})
+                    if mod_info:
+                        normalized_actions.append({
+                            "action": module_key,
+                            "moduleId": mod_info["id"],
+                            "label": mod_info["label"],
+                            "params": final_params
+                        })
+
+            if normalized_actions:
+                normalized[col] = {
+                    "steps": normalized_actions,
+                    "reason": info.get("reason", "Financial quantitative protocol.")
+                }
         return normalized
 
-    def generate_json_plan(self, df, strategy):
-        safe_log("\n--- Phase 3: JSON Compiler ---")
+    def generate_json_plan(self, df: pd.DataFrame, detailed_strategy: str) -> Dict[str, Any]:
+        safe_log("\n--- Phase 3: JSON Configuration ---")
+        profile = self.get_dataset_profile(df)
+
         prompt = f"""
-        You are a JSON Compiler. Convert the strategy into strict JSON.
-        
-        STRATEGY: 
-        {strategy}
-        
-        INSTRUCTIONS:
-        1. Keys = Exact Column Names from {list(df.columns)}.
-        2. Actions = List from ["impute", "scale", "encode", "drop", "log"].
-        3. **Logic Reason**: Copy the financial rationale verbatim.
-        4. **SEQUENCE**: If strategy says "Impute then Scale", output ["impute", "scale"].
+SYSTEM ROLE:
+You are an MLOps Engine. Map the strategy to JSON.
 
-        OUTPUT FORMAT:
-        {{ "Balance": {{ "actions": ["impute", "log", "scale"], "reason": "Impute missing, log transform skew, scale." }} }}
-        """
-        raw = ask_llm_json(prompt)
-        return self._normalize_plan(safe_parse_json(raw), df)
+DATA PROFILE:
+{profile}
 
-    def run(self, df):
-        sum_text = self.generate_executive_summary(df)
-        strat_text = self.generate_detailed_strategy(df, sum_text)
-        return {"plan": self.generate_json_plan(df, strat_text), "summary": sum_text, "strategy": strat_text}
+STRATEGY:
+{detailed_strategy}
+
+INSTRUCTIONS:
+1. Return a JSON dictionary. Keys = Column Names.
+2. Values = Object with "actions" (List of strings) and "reason" (String).
+3. Copy the reasoning verbatim.
+
+OUTPUT EXAMPLE:
+{{
+  "Annual_Income": {{
+    "actions": ["impute", "outlier", "log", "scale"],
+    "reason": "Log-transform handles the long tail, followed by Scaling."
+  }}
+}}
+"""
+        data = self._robust_json_generation(prompt)
+        normalized = self._normalize_plan(data)
+        return normalized
+
+    def run(self, df: pd.DataFrame):
+        summary = self.generate_executive_summary(df)
+        strategy = self.generate_detailed_strategy(df, summary)
+        plan = self.generate_json_plan(df, strategy)
+        return { "plan": plan, "summary": summary, "strategy": strategy }
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
-    parser.add_argument("file_path")
-    args, _ = parser.parse_known_args()
-    print("__JSON_RESULT_START__")
-    print(json.dumps(FinancePlanGenerator().run(pd.read_csv(args.file_path))))
-    print("__JSON_RESULT_END__")
+    parser.add_argument("file_path", help="Path to CSV")
+    parser.add_argument("--regenerate", help="Report text", default=None)
+    args = parser.parse_args()
+
+    try:
+        try: raw_df = pd.read_csv(args.file_path, sep=None, engine='python')
+        except: raw_df = pd.read_csv(args.file_path)
+
+        generator = FinancePlanGenerator()
+
+        if args.regenerate:
+            plan = generator.generate_json_plan(raw_df, args.regenerate)
+            result = { "plan": plan }
+            print("__JSON_RESULT_START__")
+            print(json.dumps(result))
+            print("__JSON_RESULT_END__")
+        else:
+            result = generator.run(raw_df)
+            print("__JSON_RESULT_START__")
+            print(json.dumps(result))
+            print("__JSON_RESULT_END__")
+
+    except Exception as e:
+        safe_log(f"[Error] Execution Failed: {e}")
+        traceback.print_exc(file=sys.stderr)
+        sys.exit(1)

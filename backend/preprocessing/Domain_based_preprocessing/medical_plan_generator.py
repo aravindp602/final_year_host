@@ -6,52 +6,38 @@ import argparse
 import numpy as np
 import re
 import traceback
-import ollama  # [NEW] Replaces Hugging Face
+import requests
 from typing import Dict, Any
 
 # ============================================================
-# WINDOWS ENCODING FIXES (CRITICAL)
+# SYSTEM CONFIG
 # ============================================================
 def force_utf8_streams():
-    """Forces stdout/stderr to UTF-8 to prevent Windows crashes."""
     try:
         if sys.stdout.encoding.lower() != 'utf-8':
             sys.stdout.reconfigure(encoding='utf-8')
         if sys.stderr.encoding.lower() != 'utf-8':
             sys.stderr.reconfigure(encoding='utf-8')
-    except Exception:
-        pass
+    except Exception: pass
 
 force_utf8_streams()
 
 def safe_log(message):
-    """
-    Safely prints logs to stderr. 
-    If a character cannot be printed on Windows, it is replaced with '?' instead of crashing.
-    """
-    try:
-        print(message, file=sys.stderr, flush=True)
-    except UnicodeEncodeError:
-        # Fallback: Convert to ASCII, replacing errors with '?'
-        clean_msg = message.encode('ascii', 'replace').decode('ascii')
-        print(clean_msg, file=sys.stderr, flush=True)
+    try: print(message, file=sys.stderr, flush=True)
+    except: pass
 
-# ============================================================
-# CONFIGURATION
-# ============================================================
-
-# We no longer need .env loading for HF_TOKEN
-OLLAMA_MODEL = "llama3.2"  # Ensure you ran `ollama pull llama3.2`
+# --- OLLAMA CONFIG ---
+OLLAMA_URL = "http://localhost:11434/api/generate"
+OLLAMA_MODEL = "llama3.2" 
 
 # ============================================================
 # UTILITIES
 # ============================================================
 
 def clean_json_text(text: str) -> str:
-    """Robust JSON extraction handling smart quotes and formatting errors."""
-    if not text: return ""
+    if not text: return "{}"
     
-    # [FIX] Replace Smart Quotes/Dashes that break JSON parsers
+    # [FIX] Replace Smart Quotes/Dashes that break JSON
     text = text.replace('“', '"').replace('”', '"').replace('‘', "'").replace('’', "'")
     text = text.replace('—', '-')
     
@@ -69,21 +55,26 @@ def clean_json_text(text: str) -> str:
     return text.strip()
 
 def ask_ollama(prompt: str, temperature: float = 0.1) -> str:
-    """Sends request to local Ollama instance."""
+    """Uses requests to call local Ollama API."""
     try:
-        safe_log(f"   [Step] Requesting local Ollama ({OLLAMA_MODEL})...")
-        
-        response = ollama.chat(
-            model=OLLAMA_MODEL,
-            messages=[{'role': 'user', 'content': prompt}],
-            options={'temperature': temperature}
-        )
-        
-        return response['message']['content']
-        
+        safe_log(f"   [Step] Requesting Ollama ({OLLAMA_MODEL})...")
+        payload = {
+            "model": OLLAMA_MODEL,
+            "prompt": prompt,
+            "stream": False,
+            "options": {
+                "temperature": temperature,
+                "num_ctx": 4096
+            }
+        }
+        response = requests.post(OLLAMA_URL, json=payload, timeout=300) # 5 min timeout
+        if response.status_code == 200:
+            return response.json().get("response", "")
+        else:
+            safe_log(f"   [Error] Ollama returned status {response.status_code}")
+            return ""
     except Exception as e:
-        safe_log(f"   [Error] Ollama Request Failed: {e}")
-        safe_log("   (Make sure Ollama is running and you have run 'ollama pull llama3.2')")
+        safe_log(f"   [Error] Connection to Ollama failed: {e}")
         return ""
 
 # ============================================================
@@ -92,19 +83,19 @@ def ask_ollama(prompt: str, temperature: float = 0.1) -> str:
 
 class MedicalPlanGenerator:
     def __init__(self):
-        safe_log("[Init] Initializing Clinical Engine (Ollama Powered)...")
+        safe_log("[Init] Initializing Clinical Engine (Ollama/Requests)...")
         
         self.MODULE_LIBRARY = {
-            "remove_duplicates": {"id": "dp1", "label": "Remove Duplicates (D)"},
-            "impute": {"id": "dp2", "label": "Handle Missing Values (D)"},
-            "outlier": {"id": "dp3", "label": "Outlier Removal (D)"},
-            "polynomial": {"id": "dp5", "label": "Polynomial Features (D)"},
-            "log": {"id": "dp6", "label": "Log Transform (D)"},
-            "encode": {"id": "dp7", "label": "Encoding (D)"},
-            "scale": {"id": "dp8", "label": "Scaling (D)"},
-            "normalize": {"id": "dp9", "label": "Normalization (D)"},
-            "pca": {"id": "dp10", "label": "PCA (D)"},
-            "drop": {"id": "dp_drop", "label": "Drop Column"}
+            "remove_duplicates": {"id": "dp1", "label": "Remove Duplicates (D)", "name": "remove_duplicates"},
+            "impute": {"id": "dp2", "label": "Handle Missing Values (D)", "name": "handle_missing_values"},
+            "outlier": {"id": "dp3", "label": "Outlier Removal (D)", "name": "outlier_removal_iqr"},
+            "polynomial": {"id": "dp5", "label": "Polynomial Features (D)", "name": "polynomial_features"},
+            "log": {"id": "dp6", "label": "Log Transform (D)", "name": "log_transform"},
+            "encode": {"id": "dp7", "label": "Encoding (D)", "name": "encoding"},
+            "scale": {"id": "dp8", "label": "Scaling (D)", "name": "scaling"},
+            "normalize": {"id": "dp9", "label": "Normalization (D)", "name": "normalization"},
+            "pca": {"id": "dp10", "label": "PCA (D)", "name": "pca"},
+            "drop": {"id": "dp_drop", "label": "Drop Column", "name": "drop"}
         }
 
     # ---------------- DATA PROFILING ----------------
@@ -118,9 +109,7 @@ class MedicalPlanGenerator:
                 dtype = str(df_clean[col].dtype)
                 missing_count = int(df_clean[col].isnull().sum())
                 unique = int(df_clean[col].nunique())
-                try:
-                    samples = list(df_clean[col].dropna().unique())[:5]
-                except: samples = []
+                samples = list(df_clean[col].dropna().unique())[:5]
 
                 missing_flag = f"[MISSING: {missing_count}]" if missing_count > 0 else "[COMPLETE]"
                 
@@ -186,6 +175,9 @@ AVAILABLE MODULES:
 - dp7: Encoding
 - dp8: Scaling
 - dp_drop: Drop Column
+- dp9: Normalization
+- dp10: PCA
+- dp5: Polynomial Features
 
 DATA PROFILE:
 {profile}
@@ -222,7 +214,6 @@ For each column, list the **Steps** and the **Biostatistical Reasoning**.
     def _robust_json_generation(self, prompt: str) -> Dict[str, Any]:
         for attempt in range(3):
             if attempt > 0: safe_log(f"   [Retry] JSON Parse attempt {attempt+1}...")
-            
             raw = ask_ollama(prompt, temperature=0.1)
             clean = clean_json_text(raw)
             try:
@@ -287,17 +278,6 @@ For each column, list the **Steps** and the **Biostatistical Reasoning**.
                 }
         return normalized
 
-    def _sanitize_plan_logic(self, df: pd.DataFrame, plan: Dict[str, Any]) -> Dict[str, Any]:
-        """
-        No-op Sanitization: Allows 'impute' steps even if column has no missing values currently.
-        This ensures the AI's logic is respected in the UI.
-        """
-        sanitized_plan = {}
-        for col, details in plan.items():
-            if col not in df.columns: continue
-            sanitized_plan[col] = details
-        return sanitized_plan
-
     def generate_json_plan(self, df: pd.DataFrame, detailed_strategy: str) -> Dict[str, Any]:
         safe_log("\n--- Phase 3: JSON Configuration ---")
         profile = self.get_dataset_profile(df)
@@ -327,8 +307,7 @@ OUTPUT EXAMPLE:
 """
         data = self._robust_json_generation(prompt)
         normalized = self._normalize_plan(data)
-        final_plan = self._sanitize_plan_logic(df, normalized)
-        return final_plan
+        return normalized
 
     def run(self, df: pd.DataFrame):
         summary = self.generate_executive_summary(df)
@@ -362,5 +341,6 @@ if __name__ == "__main__":
 
     except Exception as e:
         safe_log(f"[Error] Execution Failed: {e}")
+        # Traceback is helpful for debugging 500 errors
         traceback.print_exc(file=sys.stderr)
         sys.exit(1)
