@@ -80,9 +80,12 @@ class FinancePlanGenerator:
             "remove_duplicates": {"id": "dp1", "label": "Remove Duplicates (D)", "name": "remove_duplicates"},
             "impute": {"id": "dp2", "label": "Handle Missing Values (D)", "name": "handle_missing_values"},
             "outlier": {"id": "dp3", "label": "Outlier Removal (D)", "name": "outlier_removal_iqr"},
+            "polynomial": {"id": "dp5", "label": "Polynomial Features (D)", "name": "polynomial_features"},
             "log": {"id": "dp6", "label": "Log Transform (D)", "name": "log_transform"},
             "encode": {"id": "dp7", "label": "Encoding (D)", "name": "encoding"},
             "scale": {"id": "dp8", "label": "Scaling (D)", "name": "scaling"},
+            "normalize": {"id": "dp9", "label": "Normalization (D)", "name": "normalization"},
+            "pca": {"id": "dp10", "label": "PCA (D)", "name": "pca"},
             "drop": {"id": "dp_drop", "label": "Drop Column", "name": "drop"}
         }
 
@@ -157,6 +160,9 @@ AVAILABLE MODULES:
 - dp7: Encoding
 - dp8: Scaling
 - dp_drop: Drop Column
+- dp9: Normalization
+- dp10: PCA
+- dp5: Polynomial Features
 
 DATA PROFILE:
 {profile}
