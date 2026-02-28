@@ -1,41 +1,20 @@
 import pandas as pd
-from google import genai          # ✅ new SDK
-from groq import Groq
 import os
 import sys
+import re
 import json
-from dotenv import load_dotenv
-
-# Load environment variables from .env file
-# We look for .env in the parent directory (backend/)
-load_dotenv(os.path.join(os.path.dirname(__file__), '..', '.env'))
+import subprocess
+import difflib
 
 # =====================================================
-# CONFIGURE MODELS (SECURE)
+# CONFIG (LOCAL MODELS ONLY)
 # =====================================================
 
-GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
-GROQ_API_KEY   = os.getenv("GROQ_API_KEY")
+QWEN_MODEL  = "qwen2.5:3b"
+LLAMA_MODEL = "llama3.2:latest"
+GEMMA_MODEL = "gemma:2b"
 
-if not GEMINI_API_KEY:
-    print("Warning: GEMINI_API_KEY not found in .env", file=sys.stderr)
-if not GROQ_API_KEY:
-    print("Warning: GROQ_API_KEY not found in .env", file=sys.stderr)
-
-# ---------------- Gemini (NEW SDK) ----------------
-if GEMINI_API_KEY:
-    gemini_client = genai.Client(api_key=GEMINI_API_KEY)   # ✅ new style client
-else:
-    gemini_client = None
-
-# ---------------- Groq ----------------
-if GROQ_API_KEY:
-    groq_client = Groq(api_key=GROQ_API_KEY)
-else:
-    groq_client = None
-
-GROQ_MODEL   = "llama-3.3-70b-versatile"
-GEMINI_MODEL = "gemini-2.5-flash"   # or gemini-1.5-flash if needed
+ALLOWED_DOMAINS = ["Medical", "Finance", "Cybersecurity", "IoT", "Other"]
 
 # =====================================================
 # FAST DATASET LOADER
@@ -62,119 +41,94 @@ def load_any_dataset(file_path):
 # HELPERS
 # =====================================================
 
-def clean_domain(text: str) -> str:
+def clean_domain(text):
+    """Extract ONLY the domain name from model output."""
+
     if not text:
-        return "Unknown"
-    return text.replace("Domain:", "").replace("domain:", "").strip()
+        return "Other"
 
-def detect_target_column(df: pd.DataFrame):
-    """
-    Heuristic target column detection for AutoML:
-    - last column
-    - not ID-like
-    - not unique
-    - not datetime
-    - not long free text
-    """
-    if df.shape[1] == 0:
-        return None
+    text = text.split("\n")[0]
+    text = text.replace("Domain:", "")
+    text = re.sub(r"[^a-zA-Z ]", " ", text).strip()
 
-    last_col = df.columns[-1]
-    col_name = str(last_col).lower()
+    if not text:
+        return "Other"
 
-    # Exclusions
-    if col_name.startswith("unnamed"): 
-        return None
-    if "id" in col_name: 
-        return None
-    if "date" in col_name or "time" in col_name:
-        return None
-    if df[last_col].nunique() == len(df): 
-        return None
+    # exact match
+    for d in ALLOWED_DOMAINS:
+        if text.lower() == d.lower():
+            return d
 
-    # Text-like column exclusion
-    if df[last_col].dtype == "object":
-        avg_len = df[last_col].astype(str).str.len().mean()
-        if avg_len > 40:
-            return None
+    # fuzzy match
+    match = difflib.get_close_matches(text, ALLOWED_DOMAINS, n=1, cutoff=0.6)
+    if match:
+        return match[0]
 
-    return last_col
+    return "Other"
+
 
 def build_prompt(columns, sample):
     return f"""
-You are a domain classification engine.
+Identify the dataset domain from the following information.
 
-Identify the dataset domain from the schema and sample.
-
-Allowed domains ONLY:
-- Medical
-- Finance
-- Cybersecurity
-- IoT
-- Education
+Allowed domains:
+Medical, Finance, Cybersecurity, IoT, Other
 
 Columns:
 {columns}
 
-Sample Row:
+Sample:
 {sample}
 
-Return exactly in this format:
-Domain: <Medical|Finance|Cybersecurity|IoT|Education>
+Rules:
+- Choose ONLY from the allowed domains.
+- Do not explain.
+- Output EXACTLY in this format:
+
+Domain: <name>
 """
 
-# =====================================================
-# MODEL CALLS
-# =====================================================
 
-def ask_gemini(columns, sample):
-    if not gemini_client:
-        return "Error: No Gemini Key"
+def ask_model(model_name, columns, sample):
+    prompt = build_prompt(columns, sample)
+
     try:
-        prompt = build_prompt(columns, sample)
-
-        response = gemini_client.models.generate_content(
-            model=GEMINI_MODEL,
-            contents=prompt,
+        result = subprocess.run(
+            ["ollama", "run", model_name],
+            input=prompt,
+            text=True,
+            capture_output=True,
+            timeout=180  # increased timeout
         )
 
-        return clean_domain(response.text)
+        if result.returncode != 0:
+            print(f"Ollama failed for {model_name}: {result.stderr}", file=sys.stderr)
+            return "Other"
+
+        return clean_domain(result.stdout.strip())
 
     except Exception as e:
-        return f"Error: {str(e)}"
+        print(f"Model call failed ({model_name}): {e}", file=sys.stderr)
+        return "Other"
 
-def ask_groq(columns, sample):
-    if not groq_client:
-        return "Error: No Groq Key"
-    try:
-        prompt = build_prompt(columns, sample)
 
-        response = groq_client.chat.completions.create(
-            model=GROQ_MODEL,
-            messages=[{"role": "user", "content": prompt}],
-            temperature=0
-        )
-
-        return clean_domain(response.choices[0].message.content)
-
-    except Exception as e:
-        return f"Error: {str(e)}"
-
-# =====================================================
-# VOTING LOGIC
-# =====================================================
-
-def majority_domain(domains):
-    # Filter errors
-    valid = [d for d in domains if d and not d.startswith("Error")]
-    if not valid:
-        return "Unknown"
+def majority_vote(domains):
+    """
+    Final decision logic:
+    - If ≥2 models agree → that domain
+    - If all disagree → Unable to make Decision
+    """
 
     freq = {}
-    for d in valid:
+    for d in domains:
         freq[d] = freq.get(d, 0) + 1
 
-    return max(freq, key=freq.get)
+    max_count = max(freq.values())
+
+    if max_count < 2:
+        return "Unable to make Decision"
+
+    return sorted(freq.items(), key=lambda x: (-x[1], x[0]))[0][0]
 
 # =====================================================
 # MAIN PIPELINE
@@ -182,51 +136,47 @@ def majority_domain(domains):
 
 def detect_domain_from_file(file_path):
     df = load_any_dataset(file_path)
-    target_col = detect_target_column(df)
 
     columns = list(df.columns)[:20]
     sample = df.head(1).to_dict()
 
-    gemini_domain = ask_gemini(columns, sample)
-    groq_domain   = ask_groq(columns, sample)
+    qwen_domain  = ask_model(QWEN_MODEL, columns, sample)
+    llama_domain = ask_model(LLAMA_MODEL, columns, sample)
+    gemma_domain = ask_model(GEMMA_MODEL, columns, sample)
 
-    final_domain = majority_domain([gemini_domain, groq_domain])
+    final_domain = majority_vote([
+        qwen_domain,
+        llama_domain,
+        gemma_domain
+    ])
 
-    # Backend debug logs only
-    print(f"[DomainDetection] Gemini : {gemini_domain}", file=sys.stderr)
-    print(f"[DomainDetection] Groq   : {groq_domain}", file=sys.stderr)
-    print(f"[DomainDetection] Final  : {final_domain}", file=sys.stderr)
+    # backend logs (stderr only)
+    print("Qwen Domain  :", qwen_domain, file=sys.stderr)
+    print("LLaMA Domain :", llama_domain, file=sys.stderr)
+    print("Gemma Domain :", gemma_domain, file=sys.stderr)
+    print("Final Domain :", final_domain, file=sys.stderr)
 
-    return gemini_domain, groq_domain, final_domain, target_col
+    return qwen_domain, llama_domain, gemma_domain, final_domain
 
 # =====================================================
 # ENTRY POINT
 # =====================================================
 
 if __name__ == "__main__":
-    if len(sys.argv) < 2:
-        print(json.dumps({"error": "No file path provided"}))
-        sys.exit(1)
-        
     file_path = sys.argv[1]
 
-    try:
-        gemini_domain, groq_domain, final_domain, target_col = detect_domain_from_file(file_path)
+    qwen_domain, llama_domain, gemma_domain, final_domain = \
+        detect_domain_from_file(file_path)
 
-        # ✅ ONLY JSON to frontend
-        print(json.dumps({
-            "gemini_domain": gemini_domain,
-            "groq_domain": groq_domain,
-            "final_domain": final_domain,
-            "target_column": target_col
-        }))
-
-    except Exception as e:
-        # Safe fallback JSON
-        print(json.dumps({
-            "error": str(e),
-            "gemini_domain": "Error",
-            "groq_domain": "Error",
-            "final_domain": "Medical",   # safe default
-            "target_column": None
-        }))
+    # JSON output to frontend
+    print(json.dumps({
+        "models_used": [
+            "qwen2.5:3b (local)",
+            "llama3.2:latest (local)",
+            "gemma:2b (local)"
+        ],
+        "qwen_domain": qwen_domain,
+        "llama_domain": llama_domain,
+        "gemma_domain": gemma_domain,
+        "final_domain": final_domain,
+    }))

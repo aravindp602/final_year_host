@@ -1,13 +1,14 @@
 import React, { useState, useEffect } from "react";
 import axios from "axios";
 import ErrorPopup from "../../ErrorPopup";
-import { API_BASE_URL } from "../../../config";
+
+const API_URL = process.env.REACT_APP_API_URL || "http://localhost:5001";
 
 const DomainDetector = ({ file, onDomainDetected, setLoading }) => {
   const [finalDomain, setFinalDomain] = useState(null);
   const [error, setError] = useState(null);
 
-  // Reset state when a new file is uploaded
+  // Reset state when file changes
   useEffect(() => {
     setFinalDomain(null);
     setError(null);
@@ -23,33 +24,45 @@ const DomainDetector = ({ file, onDomainDetected, setLoading }) => {
     formData.append("dataset", file);
 
     console.log("🚀 [DomainDetector] Sending file:", file.name);
+    console.log("🌍 API URL:", API_URL);
 
     try {
       setLoading(true);
       setError(null);
 
       const res = await axios.post(
-        `${API_BASE_URL}/find-domain`,
+        `${API_URL}/find-domain`,
         formData,
-        { validateStatus: () => true } // prevent axios auto-throw
+        {
+          headers: {
+            "Content-Type": "multipart/form-data",
+          },
+        }
       );
 
-      console.log("📦 Backend response:", res.status, res.data);
-
-      if (res.status !== 200) {
-        throw new Error(res.data?.error || "Domain detection failed");
-      }
+      console.log("📦 Backend response:", res.data);
 
       const {
-        final_domain = res.data.domain, // backward compatibility
+        final_domain,
+        domain, // fallback support
       } = res.data;
 
-      setFinalDomain(final_domain || null);
-      onDomainDetected(final_domain);
+      const resolvedFinalDomain = final_domain || domain || "Unknown";
+
+      setFinalDomain(resolvedFinalDomain);
+      onDomainDetected(resolvedFinalDomain);
 
     } catch (err) {
-      console.error("❌ Domain detection error:", err);
-      setError(err.message || "Something went wrong while detecting domain.");
+      console.error("❌ Domain detection failed:", err);
+
+      if (err.response) {
+        setError(`Server Error: ${err.response.data?.error || "Unknown error"}`);
+      } else if (err.request) {
+        setError("Cannot connect to backend server. Check if backend is running.");
+      } else {
+        setError("Unexpected error occurred.");
+      }
+
     } finally {
       setLoading(false);
     }
@@ -84,15 +97,16 @@ const DomainDetector = ({ file, onDomainDetected, setLoading }) => {
         <div
           style={{
             marginTop: 15,
-            padding: 12,
+            padding: 14,
             backgroundColor: "#f0f8ff",
             borderRadius: 8,
-            fontSize: "14px",
+            fontSize: "16px",
+            textAlign: "center",
+            fontWeight: "bold",
+            letterSpacing: "0.5px",
           }}
         >
-          <p>
-            <strong>Final Domain:</strong> {finalDomain}
-          </p>
+          Final Domain: {finalDomain}
         </div>
       )}
     </div>

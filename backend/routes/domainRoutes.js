@@ -1,38 +1,10 @@
 const express = require("express");
 const router = express.Router();
 const path = require("path");
-const fs = require("fs");
 const { spawn } = require("child_process");
-const { upload } = require("../middleware/upload");
+const upload = require("../middleware/upload");
 
-// 1. Define Root Dir (Go up from 'routes' to 'backend')
-const rootDir = path.join(__dirname, "..");
-
-// 2. Portable Python Resolver
-function resolvePythonExecutable() {
-    // Check for Environment Variable (Cloud)
-    if (process.env.PYTHON_EXECUTABLE) {
-        return process.env.PYTHON_EXECUTABLE;
-    }
-
-    // Check Local venv (Windows vs Mac/Linux)
-    const venvPython = process.platform === "win32"
-        ? path.join(rootDir, "venv", "Scripts", "python.exe")
-        : path.join(rootDir, "venv", "bin", "python");
-
-    if (fs.existsSync(venvPython)) {
-        return venvPython;
-    }
-
-    // Fallback to global default
-    return process.platform === "win32" ? "python" : "python3";
-}
-
-const pythonExecutable = resolvePythonExecutable();
-console.log(`🐍 [DomainRoutes] Using Python: ${pythonExecutable}`);
-
-// POST /detect-domain
-// Note: Changed upload.single("file") to "dataset" to match your Frontend code
+// POST /api/detect-domain
 router.post("/detect-domain", upload.single("dataset"), async (req, res) => {
   try {
     if (!req.file) {
@@ -40,15 +12,18 @@ router.post("/detect-domain", upload.single("dataset"), async (req, res) => {
     }
 
     const filePath = req.file.path;
-    
-    // Path to the python script
-    const scriptPath = path.join(rootDir, "domain_identification", "domain_identification.py");
 
-    console.log("🚀 [Domain Detection] Running script:", scriptPath);
+    const pythonPath = path.join(__dirname, "../venv/bin/python");
+    const scriptPath = path.join(
+      __dirname,
+      "../domain_identification/domain_identification.py"
+    );
 
-    const process = spawn(pythonExecutable, [scriptPath, filePath], {
-        cwd: rootDir // Ensures Python runs from backend root context
-    });
+    const process = spawn(
+      pythonPath,
+      [scriptPath, filePath],
+      { timeout: 120000 }
+    );
 
     let output = "";
 
@@ -57,7 +32,7 @@ router.post("/detect-domain", upload.single("dataset"), async (req, res) => {
     });
 
     process.stderr.on("data", (data) => {
-      console.error("🐍 Python Error:", data.toString());
+      console.error("🐍 Python STDERR:", data.toString());
     });
 
     process.on("close", (code) => {
@@ -68,12 +43,10 @@ router.post("/detect-domain", upload.single("dataset"), async (req, res) => {
       }
 
       try {
-        // Parse the last line as JSON (handles potential print logs before JSON)
         const lastLine = output.trim().split("\n").pop();
         const result = JSON.parse(lastLine);
         res.json(result);
       } catch (error) {
-        console.error("JSON Parse Error:", error);
         res.status(500).json({
           error: "Invalid Python output",
           raw: output
